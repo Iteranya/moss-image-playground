@@ -32,6 +32,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -45,6 +46,11 @@ UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "120"))
 # playground and /v1/ — then the page calls a RELATIVE endpoint, which is same-origin
 # and involves no CORS whatsoever.
 STATIC_DIR = os.environ.get("STATIC_DIR", "").strip()
+
+# Optional shared secret for the proxied path when you cannot put basic auth in
+# front of it (an explicit Authorization: Bearer header from the page would
+# otherwise collide with HTTP basic auth). Send it as ?token=… or X-Relay-Token.
+RELAY_TOKEN = os.environ.get("RELAY_TOKEN", "").strip()
 
 MIME = {
     ".html": "text/html; charset=utf-8",
@@ -146,6 +152,13 @@ class Handler(BaseHTTPRequestHandler):
         if not body:
             self._err(400, "empty body", "relay_empty_body")
             return
+
+        if RELAY_TOKEN:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            token = self.headers.get("X-Relay-Token", "") or qs.get("token", [""])[0]
+            if token != RELAY_TOKEN:
+                self._err(403, "bad or missing relay token", "relay_token_invalid")
+                return
 
         auth = self.headers.get("Authorization", "")
         sys.stderr.write("-> POST %s from %s (%d bytes)\n" % (self.path, origin or "-", len(body)))

@@ -52,6 +52,44 @@ User=www-data
 WantedBy=multi-user.target
 ```
 
+### If you put basic auth in front (important)
+
+The page's request carries `Authorization: Bearer <moss key>`. That header **replaces** the
+`Authorization: Basic ...` the browser would otherwise attach, so any path behind Caddy's
+`basic_auth` answers 401 forever — you get an endless login prompt on every Generate.
+
+Keep the API path out of the auth block:
+
+```
+play.example.com {
+    @api path /v1/*
+    handle @api {
+        reverse_proxy localhost:9000
+    }
+
+    handle {
+        basic_auth {
+            user $2a$14$...
+        }
+        reverse_proxy localhost:9000
+    }
+}
+```
+
+The proxied path is now public, so gate it with a shared secret instead:
+
+```bash
+RELAY_TOKEN=$(openssl rand -hex 16) STATIC_DIR=.. PORT=9000 python3 server.py
+```
+
+and append it to the endpoint in the page:
+
+```
+/v1/images/generations?token=<that hex>
+```
+
+Wrong or missing token → `403 relay_token_invalid`. The page itself is still behind basic auth.
+
 ## Mode 2 — relay only, site hosted elsewhere
 
 ```bash
