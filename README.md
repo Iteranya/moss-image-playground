@@ -4,8 +4,15 @@ A single-page layout editor for [MOSS-Image](https://platform.mosi.cn/) text-to-
 (`POST https://api.mosi.cn/v1/images/generations`).
 
 Draw boxes on a canvas, give each box its own prompt, add a global scene brief, hit **Generate**.
-The page builds the layout JSON for you and calls the API directly from your browser — no backend,
-no build step, no dependencies.
+The page builds the layout JSON for you and calls the API directly from your browser — no build
+step, no dependencies.
+
+Two backends, same page:
+
+| | needs | notes |
+|---|---|---|
+| **Hosted API** (`api.mosi.cn`) | an API key | what the Endpoint field is empty for |
+| **Your own GPU** ([`backend/`](backend/README.md)) | NVIDIA card + DiffSynth | MOSS-Image-SFT locally, no key, no 30s CDN cap |
 
 ## Use it
 
@@ -43,6 +50,26 @@ python -m http.server 8765
 
 `file://` will **not** work: the browser sends `Origin: null` and the API rejects it with 403.
 Serve it over http instead.
+
+## Run it on your own GPU
+
+`backend/` hosts MOSS-Image-SFT locally (DiffSynth-Studio, tuned for 8GB VRAM) and serves this page
+on the same origin, so there is no CORS, no relay and no API key:
+
+```powershell
+cd backend
+uv venv --python 3.12 .venv ; .venv\Scripts\activate
+uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+uv pip install -r requirements.txt
+$env:MOSS_FAKE="1"; uvicorn app:app --port 8000    # frontend dev, no GPU/weights needed
+uvicorn app:app --port 8000                        # real inference
+```
+
+Open <http://127.0.0.1:8000/>. On boot the page probes `/health`; if a local backend answers it
+fills the **Endpoint** field with `/v1/images/generations` (the hint next to it reads **local GPU**),
+skips the API-key requirement, and drops the ~30s CDN cap from the time estimate. Requests are
+clamped to a 1MP budget server-side, so the page's default 1776×1168 comes back as 1248×832 on an
+8GB card. See [`backend/README.md`](backend/README.md).
 
 ## Hosting caveat (important)
 

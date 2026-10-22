@@ -5,3 +5,10 @@ editor.html
 *.log
 .DS_Store
 Thumbs.db
+.venv/
+__pycache__/
+out_test/
+models/
+probe.png
+DiffSynth-Studio/
+*.egg-info/

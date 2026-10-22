@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>MOSS-Image-SFT · backend smoke page</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; background:#14151a; color:#e8e8ef; margin:0; padding:24px; }
+  h1 { font-size:16px; letter-spacing:.02em; text-transform:uppercase; color:#9aa0b4; }
+  label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#7c8399; margin:10px 0 4px; }
+  textarea, input { width:100%; box-sizing:border-box; background:#1c1e26; color:#e8e8ef;
+    border:1px solid #2c2f3a; border-radius:6px; padding:8px; font:inherit; }
+  textarea { min-height:80px; resize:vertical; }
+  .row { display:flex; gap:10px; }
+  .row > div { flex:1; }
+  button { margin-top:14px; background:#3d5afe; color:#fff; border:0; border-radius:6px;
+    padding:10px 18px; font:inherit; font-weight:600; cursor:pointer; }
+  button:disabled { background:#2a2d38; color:#666d80; cursor:not-allowed; }
+  #bar { height:4px; background:#23252f; border-radius:2px; overflow:hidden; margin-top:14px; }
+  #fill { height:100%; width:0; background:#3d5afe; transition:width .2s; }
+  #log { font:12px/1.6 ui-monospace, monospace; color:#8b93a7; white-space:pre-wrap; margin-top:10px; }
+  #out { margin-top:16px; }
+  #out img { max-width:100%; border-radius:8px; border:1px solid #2c2f3a; }
+</style>
+</head>
+<body>
+<h1>MOSS-Image-SFT · local backend smoke page</h1>
+
+<label for="prompt">Prompt</label>
+<textarea id="prompt">a hand-painted sign reading "MOSS-Image" above a wooden door, dusk light</textarea>
+
+<label for="neg">Negative</label>
+<input id="neg" value="nsfw, worst quality, bad anatomy, watermark, jpeg artifact" />
+
+<div class="row">
+  <div><label for="size">Size (px, square)</label><input id="size" type="number" value="1024" step="16" /></div>
+  <div><label for="steps">Steps</label><input id="steps" type="number" value="50" min="4" max="100" /></div>
+  <div><label for="cfg">CFG</label><input id="cfg" type="number" value="3" step="0.1" /></div>
+  <div><label for="seed">Seed (blank = random)</label><input id="seed" type="number" placeholder="random" /></div>
+</div>
+
+<div class="row" style="align-items:center;gap:10px;margin-top:10px">
+  <div><label for="base">API base</label><input id="base" value="http://127.0.0.1:8000" /></div>
+</div>
+
+<button id="go">Generate</button>
+<button id="cancel" disabled style="background:#2a2d38">Cancel</button>
+<div id="bar"><div id="fill"></div></div>
+<div id="log">idle</div>
+<div id="out"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let current = null, poller = null;
+
+async function health() {
+  try {
+    const h = await (await fetch($("base").value + "/health")).json();
+    $("log").textContent = h.ready
+      ? `model ready · ${h.mode} · ${h.gpu ? h.gpu.name + " " + h.gpu.vram_free_gib + "/" + h.gpu.vram_total_gib + " GiB free" : "no gpu info"}`
+      : `loading… ${h.load_seconds ?? 0}s` + (h.error ? ` · ERROR ${h.error}` : "");
+  } catch (e) { $("log").textContent = "backend unreachable: " + e.message; }
+}
+
+$("go").onclick = async () => {
+  $("go").disabled = true; $("cancel").disabled = false; $("out").innerHTML = "";
+  const payload = {
+    prompt: $("prompt").value,
+    negative_prompt: $("neg").value,
+    width: +$("size").value, height: +$("size").value,
+    num_inference_steps: +$("steps").value,
+    cfg_scale: +$("cfg").value,
+    seed: $("seed").value === "" ? null : +$("seed").value,
+  };
+  const r = await fetch($("base").value + "/api/generate", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  });
+  if (!r.ok) { $("log").textContent = "rejected: " + (await r.text()); reset(); return; }
+  const { job_id } = await r.json();
+  current = job_id;
+  poller = setInterval(() => tick(job_id), 800);
+};
+
+$("cancel").onclick = async () => {
+  if (!current) return;
+  await fetch(`${$("base").value}/api/jobs/${current}/cancel`, { method: "POST" });
+  $("log").textContent = "cancelling…";
+};
+
+async function tick(id) {
+  const s = await (await fetch(`${$("base").value}/api/jobs/${id}`)).json();
+  $("fill").style.width = (s.progress * 100).toFixed(1) + "%";
+  $("log").textContent = `${s.status} · step ${s.step}/${s.total_steps} · ${s.elapsed_s}s · seed ${s.seed}` +
+    (s.error ? `\n${s.error}` : "");
+  if (["done", "error", "cancelled"].includes(s.status)) {
+    clearInterval(poller); reset();
+    if (s.status === "done") {
+      const img = new Image();
+      img.src = `${$("base").value}${s.image_url}?t=${Date.now()}`;
+      $("out").appendChild(img);
+      $("log").textContent += ` · ${s.width}x${s.height}`;
+    }
+  }
+}
+function reset() { $("go").disabled = false; $("cancel").disabled = true; current = null; }
+
+health();
+setInterval(health, 5000);
+</script>
+</body>
+</html>

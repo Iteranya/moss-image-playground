@@ -159,10 +159,10 @@
     </div>
 
     <div class="field">
-      <label for="endpoint">Endpoint <span style="text-transform:none;letter-spacing:0">(optional relay)</span></label>
+      <label for="endpoint">Endpoint <span style="text-transform:none;letter-spacing:0">(optional relay / local GPU)</span></label>
       <input id="endpoint" type="text" spellcheck="false"
              placeholder="https://api.mosi.cn/v1/images/generations  —  or your relay URL">
-      <div class="hint"><span>leave empty to call the API directly (localhost only)</span><span id="epState"></span></div>
+      <div class="hint"><span>empty = hosted API · auto-detects a local backend on :8000</span><span id="epState"></span></div>
     </div>
 
     <div class="row">
@@ -293,6 +293,7 @@ const keyEl=$('key'), modelEl=$('model'), sizeEl=$('size');
 const statusEl=$('status'), canvasEl=$('canvas'), metaEl=$('meta');
 const surface=$('surface'), elistEl=$('elist');
 let lastUrl=null, busy=false, selId=null, dragState=null, seq=1, jsonDirty=false;
+let localBackend=false;   // a moss backend answered /health -> no key, no 30s CDN cap
 
 // boxes are stored NORMALIZED (0..1) so they survive any canvas change
 const st = { scene_type:'', gen_brief:'', els:[] };
@@ -306,6 +307,10 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   $('steps').value = localStorage.getItem('moss.steps') || '25';
   $('cfg').value = localStorage.getItem('moss.cfg') || '3';
   $('endpoint').value = localStorage.getItem('moss.endpoint') || '';
+  if(!$('endpoint').value){
+    const auto = await detectLocalBackend();
+    if(auto) $('endpoint').value = auto;
+  }
   refresh(); layoutSurface(); render();
 
   updateHostWarn();
@@ -336,11 +341,34 @@ function endpointUrl(){
 function isLocalHost(){
   return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
 }
+// Ask /health on the same origin, then on :8000. A moss backend answers with
+// {ready, mode, gpu…}; the hosted API answers 403/404. Result: zero-config local GPU.
+async function detectLocalBackend(){
+  const bases=[''];
+  if(isLocalHost() && location.port!=='8000') bases.push('http://127.0.0.1:8000');
+  for(const b of bases){
+    try{
+      const ctl=new AbortController(), t=setTimeout(()=>ctl.abort(),1500);
+      const r=await fetch(b+'/health',{signal:ctl.signal,cache:'no-store'});
+      clearTimeout(t);
+      if(!r.ok) continue;
+      const h=await r.json();
+      if(h && typeof h.ready==='boolean'){ localBackend=true; return (b||'')+'/v1/images/generations'; }
+    }catch(e){ /* nothing listening on that base */ }
+  }
+  return '';
+}
+function isLocalEndpoint(){
+  const v=($('endpoint').value||'').trim();
+  if(!v) return localBackend;
+  return v.startsWith('/') || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(v);
+}
 function updateHostWarn(){
   const relay = !!($('endpoint').value || '').trim();
   const local = isLocalHost();
   $('hostWarn').style.display = (!local && !relay) ? 'block' : 'none';
-  $('epState').textContent = relay ? 'via relay' : (local ? 'direct (localhost ok)' : 'direct — blocked here');
+  $('epState').textContent = isLocalEndpoint() ? 'local GPU'
+    : (relay ? 'via relay' : (local ? 'direct (localhost ok)' : 'direct — blocked here'));
   $('epState').style.color = (!local && !relay) ? 'var(--err)' : 'var(--muted)';
 }
 
@@ -365,8 +393,11 @@ function refresh(){
   const steps = parseInt($('steps').value,10)||25;
   const est = 3.4 + 0.404*px*steps/1e6;
   const tEl=$('timeState');
-  tEl.lastElementChild.textContent = '~'+est.toFixed(0)+'s (cap ~30s)'+(est>27?'  ⚠ likely 524':'');
-  tEl.lastElementChild.style.color = est>27?'var(--warn)':'var(--muted)';
+  // the 30s figure is the hosted CDN's cut-off; a local GPU has no such limit
+  const local = isLocalEndpoint();
+  tEl.lastElementChild.textContent = local ? '~'+est.toFixed(0)+'s on a hosted GPU · local is slower'
+    : '~'+est.toFixed(0)+'s (cap ~30s)'+(est>27?'  ⚠ likely 524':'');
+  tEl.lastElementChild.style.color = (!local && est>27) ? 'var(--warn)' : 'var(--muted)';
 
   const n = $('prompt').value.length;
   $('charCount').textContent = n+' / 4000';
@@ -634,7 +665,9 @@ function buildPayload(){
 async function post(key, payload){
   const res = await fetch(endpointUrl(), {
     method:'POST',
-    headers:{ 'Authorization':'Bearer '+key, 'Content-Type':'application/json' },
+    // a local backend has no auth; only send the header when a key exists
+    headers: key ? { 'Authorization':'Bearer '+key, 'Content-Type':'application/json' }
+                 : { 'Content-Type':'application/json' },
     body: JSON.stringify(payload)
   });
   const txt = await res.text();
@@ -653,7 +686,7 @@ async function post(key, payload){
 async function go(){
   if(busy) return;
   const key=keyEl.value.trim();
-  if(!key){ log('Missing API key. Paste it in the field above.','err'); keyEl.focus(); return; }
+  if(!key && !isLocalEndpoint()){ log('Missing API key. Paste it in the field above (not needed for a local backend).','err'); keyEl.focus(); return; }
   if(!st.els.length && !$('prompt').value.trim()){ log('Nothing to send — draw a box or write a prompt.','err'); return; }
 
   let payload=buildPayload();
@@ -662,7 +695,8 @@ async function go(){
   busy=true; const btn=$('go');
   btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Generating…';
   let t0=performance.now();
-  const timer=setInterval(()=>{ log('waiting… '+Math.round((performance.now()-t0)/1000)+'s (ceiling ~30s)'); },1000);
+  const cap = isLocalEndpoint() ? ' · local GPU, no 30s cap' : ' (ceiling ~30s)';
+  const timer=setInterval(()=>{ log('waiting… '+Math.round((performance.now()-t0)/1000)+'s'+cap); },1000);
   log('POST ' + endpointUrl());
 
   try{
@@ -678,6 +712,9 @@ async function go(){
         const steps=payload.num_inference_steps||25;
         const elapsed=performance.now()-t0;
         // CORS rejection is instant; a 524 gateway cut takes ~30s. Only the latter is worth retrying.
+        if(net && isLocalEndpoint()){
+          throw new Error('Local backend did not answer — is uvicorn still running on that port? ('+err.message+')');
+        }
         if(net && elapsed < 8000){
           throw new Error('Request blocked before it ran — this origin is not on the API CORS allowlist (only localhost and platform.mosi.cn are). Put your relay URL in the Endpoint field, or run the page locally.');
         }

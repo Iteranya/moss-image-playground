@@ -1,0 +1,6 @@
+# Backend deps only. torch and diffsynth are installed separately -- see README,
+# because torch needs the CUDA wheel index and diffsynth is a git install.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.6
+pillow>=10.0
