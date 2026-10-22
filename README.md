@@ -63,25 +63,20 @@ read-only demo of the UI; generation only works when served from `localhost`.
 Bridging that gap needs a relay you control (e.g. a Cloudflare Worker that forwards to
 `/v1/images/generations` and adds the CORS headers), with the page's endpoint pointed at it.
 
-## Making the hosted copy work (relay)
+## Self-hosting (VPS)
 
-Static hosting can't fix this on its own, so run the relay in `relay/` on any box you control
-(a VPS, a Raspberry Pi, whatever):
+Serve the page and the API from one origin and there is no CORS to fight:
 
 ```bash
-PORT=9000 ALLOW_ORIGINS=https://<your-pages-host> python3 relay/server.py
+cd relay
+STATIC_DIR=.. PORT=9000 python3 relay/server.py
 ```
 
-No dependencies. Put TLS in front (Caddy or nginx + certbot) — an https page refuses to call an
-http relay. Then paste the relay URL into the playground's **Endpoint** field:
+Then put TLS in front (Caddy: `play.example.com { reverse_proxy 127.0.0.1:9000 }`), open
+`https://play.example.com/`, and set the **Endpoint** field to the relative path
+`/v1/images/generations`. Python 3.8+, no dependencies.
 
-```
-https://relay.example.com/v1/images/generations
-```
-
-The banner disappears the moment an endpoint is set, and the key still lives only in your
-browser's localStorage — it just transits your own relay on the way to the API.
-Details: [`relay/README.md`](relay/README.md).
+Details and the standalone-relay variant: [`relay/README.md`](relay/README.md).
 
 ## Files
 

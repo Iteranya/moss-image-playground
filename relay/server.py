@@ -11,15 +11,17 @@ Objectives: stdlib only, no dependencies, no state. The API key travels in the
 Authorization header from the browser through this process to the API — it is never
 logged or written to disk.
 
-Run:
+MODE 1 — serve the site AND the API on one origin (recommended, no CORS at all):
+    STATIC_DIR=. PORT=9000 python3 server.py
+    -> http://<host>:9000/  , Endpoint field: /v1/images/generations
+
+MODE 2 — relay only, page hosted elsewhere:
     PORT=9000 ALLOW_ORIGINS=https://iteranya.github.io python3 server.py
-    # or just: python3 server.py          (allows any origin)
+    -> Endpoint field: https://<your-domain>/v1/images/generations
 
 Test:
     curl -i -X OPTIONS localhost:9000 -H "Origin: https://iteranya.github.io" \
          -H "Access-Control-Request-Method: POST"
-
-Point the page's Endpoint field at:  https://<your-domain>/v1/images/generations
 
 Put TLS in front (required — an https page cannot call an http relay):
     Caddy:  relay.example.com { reverse_proxy 127.0.0.1:9000 }
@@ -38,6 +40,25 @@ PORT = int(os.environ.get("PORT", "9000"))
 BIND = os.environ.get("BIND", "0.0.0.0")
 ALLOW = [o.strip() for o in os.environ.get("ALLOW_ORIGINS", "*").split(",") if o.strip()]
 UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "120"))
+
+# Point this at the folder holding index.html to have one process serve both the
+# playground and /v1/ — then the page calls a RELATIVE endpoint, which is same-origin
+# and involves no CORS whatsoever.
+STATIC_DIR = os.environ.get("STATIC_DIR", "").strip()
+
+MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+}
 
 
 def cors(origin: str):
@@ -58,6 +79,12 @@ class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         origin = self.headers.get("Origin", "")
         headers, permitted = cors(origin)
+        # Same-origin requests are always fine — this is what makes STATIC_DIR mode
+        # work with no CORS at all: the page and /v1/ live on the same host.
+        host = self.headers.get("Host", "")
+        if origin and host and origin in ("http://" + host, "https://" + host):
+            permitted = True
+            headers["Access-Control-Allow-Origin"] = origin
         return headers, permitted, origin
 
     def _send(self, status: int, body: bytes, headers: dict, ctype="application/json"):
@@ -81,9 +108,27 @@ class Handler(BaseHTTPRequestHandler):
         self._send(204, b"", headers)
 
     def do_GET(self):  # noqa: N802
-        if self.path.rstrip("/") in ("", "/health"):
+        if self.path.rstrip("/") == "/health":
             body = b'{"ok":true,"upstream":"' + UPSTREAM.encode() + b'"}'
             self._send(200, body, {"Content-Type": "application/json"})
+            return
+        if STATIC_DIR:
+            path = self.path.split("?", 1)[0]
+            if path in ("", "/"):
+                path = "/index.html"
+            # never serve dotfiles: .git/ (remotes, config), .env, .gitignore, editor junk
+            if any(seg.startswith(".") for seg in path.split("/") if seg):
+                self._err(404, "not found: %s" % path, "static_not_found")
+                return
+            root = os.path.abspath(STATIC_DIR)
+            full = os.path.abspath(os.path.join(root, path.lstrip("/")))
+            if (full == root or full.startswith(root + os.sep)) and os.path.isfile(full):
+                with open(full, "rb") as fh:
+                    data = fh.read()
+                ctype = MIME.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
+                self._send(200, data, {}, ctype)
+                return
+            self._err(404, "not found: %s" % path, "static_not_found")
             return
         self._err(404, "not found", "relay_not_found")
 
