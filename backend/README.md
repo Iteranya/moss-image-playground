@@ -124,6 +124,40 @@ Caveats, honestly:
 - At 8 steps the **9B text encoder becomes the bottleneck**, so `max_sequence_length` matters more
   than it did.
 
+## Prompt size: the two ways it bites
+
+The playground builds its prompt as a layout JSON with one `identity` per box, so prompts are long
+by design — the shipped `blue-archive` sample is **8,451 characters**, `ddlc-beach.json` is 3,774.
+
+**1. It costs real seconds, once per prompt.** The 9B text encoder does one prefill pass over the
+whole prompt; that pass is wall-clock, not per-step. Encoding is ~linear in tokens. At 8 steps
+turbo the encoder can be *most* of the wait: 8 steps × ~1.4–2.3 s = 11–18 s of sampling versus
+20–35 s of encoding for an 8.4k-char prompt. `max_sequence_length` is the knob that shortens it.
+
+**2. Above `max_sequence_length` it truncates silently.** The pipeline calls
+`tokenizer(..., truncation=True, max_length=max_sequence_length)` — no exception, no log, the tail
+just stops existing. Because a layout JSON carries `gen_brief` first and the elements after it, what
+gets cut is the **last boxes** — you get a picture missing the characters you spent the longest
+describing, and it looks like the model ignoring you rather than a cut prompt.
+
+So the backend counts it and tells you:
+
+| where | fields |
+|---|---|
+| `GET /api/jobs/{id}` (set before sampling starts) | `prompt_chars`, `prompt_tokens`, `prompt_truncated` |
+| `/v1/images/generations` → `usage` | same three |
+| `metadata-<id>.json` sidecar | same three |
+| server log | a `WARNING` line naming both numbers when it will be cut |
+
+The count reproduces what the encoder actually sees, chat-template wrapper included
+(`apply_chat_template(..., add_generation_prompt=True, enable_thinking=True)`), so it is not a
+char/4 guess when a real pipeline is loaded.
+
+Practical targets for this box: keep prompts **under ~2k tokens** (~7k chars), keep per-box
+`identity` to a dozen words instead of a paragraph, and put shared style/lighting in `gen_brief`
+rather than repeating it per box. Raising `max_sequence_length` above 4096 buys nothing — that is
+the model's trained ceiling.
+
 ## API
 
 Two surfaces, one engine.
@@ -222,7 +256,7 @@ app: geometry clamping, queueing, progress reporting, seed handling, PNG deliver
 sidecar, 422 on bad input, mid-run cancellation, the `/v1/images/generations` compat shape
 (the playground's 1776×1168 default arriving as 1248×832), `b64_json`, whitelisted static
 hosting, and turbo clamping in both directions (25/3 → 8/1 when active, untouched when off).
-**40/40 pass.**
+**42/42 pass.**
 
 Also checked by hand, since they need a real server: `MOSS_FAKE=1 MOSS_TURBO=1` boots and reports
 `turbo: {enabled: true, active: false}` — i.e. "asked for, but no adapter loaded, so do not clamp".

@@ -170,9 +170,44 @@ def _new_job(params: GenerateRequest) -> dict[str, Any]:
     return job
 
 
+def _prompt_tokens(pipe, prompt: str) -> int | None:
+    """Count tokens the text encoder will actually receive.
+
+    The pipeline does `tokenizer(apply_chat_template(...), truncation=True, max_length=...)`, so a
+    prompt longer than max_sequence_length is silently cut -- no error, no warning, the tail just
+    disappears. Counting here is the only way to surface that, and the chat template wrapper has to
+    be included or the count is off by its overhead.
+    """
+    tok = getattr(pipe, "tokenizer", None)
+    if tok is None:
+        return None
+    try:
+        formatted = tok.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
+        ids = tok(formatted, truncation=False)["input_ids"]
+        return len(ids)
+    except Exception as exc:  # never let accounting break a generation
+        print(f"[moss] token count unavailable: {type(exc).__name__}: {exc}")
+        return None
+
+
 def _run_job(job: dict[str, Any], params: GenerateRequest) -> None:
     job.update(status="running", started=time.time())
     try:
+        tokens = _prompt_tokens(_pipe, params.prompt)
+        job["prompt_chars"] = len(params.prompt)
+        job["prompt_tokens"] = tokens
+        job["prompt_truncated"] = bool(tokens and tokens > params.max_sequence_length)
+        if job["prompt_truncated"]:
+            print(
+                f"[moss] WARNING prompt is {tokens} tokens but max_sequence_length="
+                f"{params.max_sequence_length}: the tail is silently dropped by the tokenizer "
+                f"(with a layout JSON that means the LAST elements never reach the model)"
+            )
         width, height = clamp_geometry(params.width, params.height, params.max_pixels)
         job["width"], job["height"] = width, height
         # _resolve_sampling() already filled these, this is just for the type checker
@@ -203,6 +238,9 @@ def _run_job(job: dict[str, Any], params: GenerateRequest) -> None:
                     "mode": config.MODE,
                     "model_id": config.MODEL_ID,
                     "elapsed_s": round(time.time() - job["started"], 1),
+                    "prompt_chars": job.get("prompt_chars"),
+                    "prompt_tokens": job.get("prompt_tokens"),
+                    "prompt_truncated": job.get("prompt_truncated"),
                 },
                 indent=2,
             ),
@@ -423,6 +461,10 @@ async def images_generations(req: ImageGenRequest, request: Request) -> Any:
             "num_inference_steps": last["total_steps"],
             "images": req.n,
             "elapsed_s": round(time.time() - started, 1),
+            # prompt length as the text encoder saw it; prompt_truncated means the tail was cut
+            "prompt_chars": last.get("prompt_chars"),
+            "prompt_tokens": last.get("prompt_tokens"),
+            "prompt_truncated": last.get("prompt_truncated"),
         },
     }
 

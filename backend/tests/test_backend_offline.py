@@ -37,9 +37,20 @@ sys.modules["torch"] = fake_torch
 
 
 # ---- stub config (build_pipeline returns a fake sampler) -------------------
+class FakeTokenizer:
+    """Mimics the Qwen tokenizer surface app._prompt_tokens() uses: ~4 chars per token."""
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True, enable_thinking=True):
+        return messages[0]["content"]
+
+    def __call__(self, text, return_tensors=None, truncation=False, max_length=None):
+        return {"input_ids": list(range(max(1, len(text) // 4)))}
+
+
 class FakePipe:
     def __init__(self, step_delay=0.02):
         self.step_delay = step_delay
+        self.tokenizer = FakeTokenizer()
 
     def __call__(self, *, prompt, negative_prompt, height, width, seed, num_inference_steps,
                  cfg_scale, sigma_shift, max_sequence_length, uncond_skip_layers,
@@ -128,6 +139,26 @@ def main() -> int:
               f"{len(img.content)} bytes")
         meta = client.get(f"/api/jobs/{job_id}/metadata").json()
         check("metadata sidecar written", meta["width"] == 1024 and meta["mode"] == "disk", str(meta["elapsed_s"]))
+        check("prompt length is counted, not truncated",
+              meta["prompt_chars"] == len("a cat holding a sign that says hello")
+              and meta["prompt_tokens"] > 0 and meta["prompt_truncated"] is False,
+              f"{meta.get('prompt_chars')} chars / {meta.get('prompt_tokens')} tokens")
+
+        # an over-long prompt against a small max_sequence_length must be flagged, not silently cut
+        long_prompt = "character description, " * 200  # ~4800 chars, ~1200 fake tokens
+        r = client.post("/api/generate", json={
+            "prompt": long_prompt, "width": 512, "height": 512,
+            "num_inference_steps": 4, "max_sequence_length": 256,
+        })
+        tid = r.json()["job_id"]
+        for _ in range(200):
+            s = client.get(f"/api/jobs/{tid}").json()
+            if s["status"] in ("done", "error", "cancelled"):
+                break
+            time.sleep(0.05)
+        check("over-long prompt flagged as truncated",
+              s["status"] == "done" and s["prompt_truncated"] is True and s["prompt_tokens"] > 256,
+              f"tokens={s.get('prompt_tokens')} max_seq=256 truncated={s.get('prompt_truncated')}")
 
         # --- geometry clamp enforced by the API ---
         r = client.post("/api/generate", json={"prompt": "x", "width": 4096, "height": 4096, "num_inference_steps": 4})
