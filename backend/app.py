@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 import config
-from util import DEFAULT_MAX_PIXELS, clamp_geometry, snap_seed
+from util import DEFAULT_MAX_PIXELS, clamp_geometry, resolve_sampling, snap_seed
 
 OUT_DIR = Path(os.environ.get("MOSS_OUT_DIR", "./out")).resolve()
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -87,11 +87,14 @@ async def _startup() -> None:
 # --- schemas ---------------------------------------------------------------
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
-    negative_prompt: str = "nsfw, worst quality, bad anatomy, watermark, jpeg artifact"
+    # note: no "nsfw" here on purpose -- the local checkpoint is uncensored, and the upstream
+    # negative suggestion would fight exactly the content a self-hosted box is for.
+    negative_prompt: str = "worst quality, bad anatomy, watermark, jpeg artifact"
     width: int = 1024
     height: int = 1024
-    num_inference_steps: int = Field(50, ge=4, le=100)
-    cfg_scale: float = Field(3.0, ge=1.0, le=8.0)
+    # None = "whatever the loaded model wants": 8 steps / CFG 1.0 with turbo, else 50 / 3.0
+    num_inference_steps: int | None = Field(None, ge=4, le=100)
+    cfg_scale: float | None = Field(None, ge=1.0, le=8.0)
     sigma_shift: float = Field(5.0, ge=1.0, le=10.0)
     seed: int | None = None
     max_sequence_length: int = Field(4096, ge=64, le=4096)
@@ -122,6 +125,34 @@ def _progress_cmd(job: dict[str, Any]):
     return bar
 
 
+def _turbo() -> bool:
+    """True only when the 8-step LoRA actually loaded -- otherwise keep full steps."""
+    return bool(getattr(config, "TURBO", False)) and bool(getattr(config, "TURBO_ACTIVE", False))
+
+
+def _resolve_sampling(params: GenerateRequest) -> GenerateRequest:
+    """Fill in steps/CFG from the loaded model, then clamp if turbo is active.
+
+    Turbo is a step-distilled model: 25 steps at CFG 3 through it gives burnt output, so the
+    ceiling is enforced server-side rather than trusted to the caller.
+    """
+    turbo = _turbo()
+    steps = params.num_inference_steps
+    cfg = params.cfg_scale
+    if steps is None:
+        steps = int(getattr(config, "TURBO_STEPS", 8)) if turbo else 50
+    if cfg is None:
+        cfg = float(getattr(config, "TURBO_CFG", 1.0)) if turbo else 3.0
+    steps, cfg = resolve_sampling(
+        steps,
+        cfg,
+        turbo=turbo,
+        turbo_steps=int(getattr(config, "TURBO_STEPS", 8)),
+        turbo_cfg=float(getattr(config, "TURBO_CFG", 1.0)),
+    )
+    return params.model_copy(update={"num_inference_steps": steps, "cfg_scale": cfg})
+
+
 def _new_job(params: GenerateRequest) -> dict[str, Any]:
     job: dict[str, Any] = {
         "job_id": uuid.uuid4().hex[:12],
@@ -144,14 +175,17 @@ def _run_job(job: dict[str, Any], params: GenerateRequest) -> None:
     try:
         width, height = clamp_geometry(params.width, params.height, params.max_pixels)
         job["width"], job["height"] = width, height
+        # _resolve_sampling() already filled these, this is just for the type checker
+        steps = 50 if params.num_inference_steps is None else params.num_inference_steps
+        cfg = 3.0 if params.cfg_scale is None else params.cfg_scale
         image = _pipe(
             prompt=params.prompt,
             negative_prompt=params.negative_prompt,
             height=height,
             width=width,
             seed=job["seed"],
-            num_inference_steps=params.num_inference_steps,
-            cfg_scale=params.cfg_scale,
+            num_inference_steps=steps,
+            cfg_scale=cfg,
             sigma_shift=params.sigma_shift,
             max_sequence_length=params.max_sequence_length,
             uncond_skip_layers=tuple(params.uncond_skip_layers),
@@ -218,6 +252,13 @@ async def health() -> dict[str, Any]:
         "error": _load_error,
         "mode": config.MODE,
         "model_id": config.MODEL_ID,
+        "turbo": {
+            "enabled": bool(getattr(config, "TURBO", False)),
+            "active": _turbo(),
+            "steps": getattr(config, "TURBO_STEPS", None),
+            "cfg": getattr(config, "TURBO_CFG", None),
+            "error": getattr(config, "TURBO_ERROR", None),
+        },
         "gpu": gpu,
         "busy": _lock().locked(),
         "queued": sum(1 for j in _jobs.values() if j["status"] == "queued"),
@@ -236,6 +277,7 @@ async def generate(params: GenerateRequest) -> JobAccepted:
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
+    params = _resolve_sampling(params)
     job = _new_job(params)
     asyncio.create_task(_enqueue(job, params))
     return JobAccepted(job_id=job["job_id"], status=job["status"], queue_position=job["queue_position"])
@@ -315,8 +357,9 @@ class ImageGenRequest(BaseModel):
     size: str = "1024x1024"
     response_format: str = "url"
     negative_prompt: str | None = None
-    num_inference_steps: int = Field(50, ge=4, le=100)
-    guidance_scale: float = Field(3.0, ge=1.0, le=8.0)
+    # the playground always sends 25 / 3.0; with turbo these get clamped to 8 / 1.0
+    num_inference_steps: int | None = Field(None, ge=4, le=100)
+    guidance_scale: float | None = Field(None, ge=1.0, le=8.0)
     seed: int | None = None
     # accepted and ignored: the hosted API offers a visible watermark, this pipeline does not
     output_watermark: dict[str, Any] | None = None
@@ -340,8 +383,7 @@ async def images_generations(req: ImageGenRequest, request: Request) -> Any:
     for index in range(req.n):
         params = GenerateRequest(
             prompt=req.prompt,
-            negative_prompt=req.negative_prompt
-            or "nsfw, worst quality, bad anatomy, watermark, jpeg artifact",
+            negative_prompt=req.negative_prompt or "worst quality, bad anatomy, watermark, jpeg artifact",
             width=width,
             height=height,
             num_inference_steps=req.num_inference_steps,
@@ -352,6 +394,7 @@ async def images_generations(req: ImageGenRequest, request: Request) -> Any:
             seed=None if req.seed is None else req.seed + index,
             max_pixels=COMPAT_MAX_PIXELS,
         )
+        params = _resolve_sampling(params)
         job = _new_job(params)
         await _enqueue(job, params)          # serialised by the GPU lock, blocks until done
         if job["status"] != "done":

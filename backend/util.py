@@ -45,6 +45,27 @@ def clamp_geometry(width: int, height: int, max_pixels: int = DEFAULT_MAX_PIXELS
     return width, height
 
 
+def resolve_sampling(
+    steps: int,
+    cfg: float,
+    turbo: bool = False,
+    turbo_steps: int = 8,
+    turbo_cfg: float = 1.0,
+) -> tuple[int, float]:
+    """Clamp steps/CFG when the OPD 8-step distillation LoRA is loaded.
+
+    A step-distilled model is trained at few steps with no classifier-free guidance; running it
+    at 25 steps / CFG 3 does not just waste time, it produces blown-out garbage. The official
+    recipe is `num_inference_steps=8, cfg_scale=1.0`, so that is the ceiling here.
+    """
+    steps = int(steps)
+    cfg = float(cfg)
+    if turbo:
+        steps = min(steps, int(turbo_steps))
+        cfg = min(cfg, float(turbo_cfg))
+    return steps, cfg
+
+
 def snap_seed(seed) -> int:
     """None -> random 32-bit; anything else coerced to int."""
     if seed is None or seed == "":

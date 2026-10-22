@@ -44,10 +44,11 @@ class _Timer:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--prompt", default="a hand-painted sign that reads \"MOSS-Image\" above a wooden door, dusk light")
-    ap.add_argument("--negative", default="nsfw, worst quality, bad anatomy, watermark, jpeg artifact")
+    ap.add_argument("--negative", default="worst quality, bad anatomy, watermark, jpeg artifact")
     ap.add_argument("--size", type=int, default=1024, help="square side; clamped to a multiple of 16")
-    ap.add_argument("--steps", type=int, default=50)
-    ap.add_argument("--cfg", type=float, default=3.0)
+    turbo = bool(getattr(config, "TURBO", False))
+    ap.add_argument("--steps", type=int, default=config.TURBO_STEPS if turbo else 50)
+    ap.add_argument("--cfg", type=float, default=config.TURBO_CFG if turbo else 3.0)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--mode", default=None, help="disk | hybrid | fp8 | ram (defaults to MOSS_MODE)")
     ap.add_argument("--out", default="probe.png")
@@ -64,6 +65,11 @@ def main() -> None:
     t0 = time.time()
     pipe = config.build_pipeline(args.mode or config.MODE)
     print(f"loaded in {time.time()-t0:.1f}s (mode={args.mode or config.MODE})")
+    if getattr(config, "TURBO", False):
+        state = "active" if config.TURBO_ACTIVE else "enabled but NOT loaded"
+        print(f"turbo: {state} (steps<={config.TURBO_STEPS}, cfg<={config.TURBO_CFG})")
+        if config.TURBO_ERROR:
+            print(f"turbo error: {config.TURBO_ERROR}")
 
     timer = _Timer()
     t1 = time.time()

@@ -63,7 +63,11 @@ uv pip install torch --index-url https://download.pytorch.org/whl/cu124
 uv pip install -r requirements.txt
 $env:MOSS_FAKE="1"; uvicorn app:app --port 8000    # frontend dev, no GPU/weights needed
 uvicorn app:app --port 8000                        # real inference
+$env:MOSS_TURBO="1"; uvicorn app:app --port 8000   # + 8-step Turbo LoRA (~4-6x faster)
 ```
+
+With `MOSS_TURBO=1` the backend loads DiffSynth's OPD 8-step LoRA and clamps requests to 8 steps at
+CFG 1.0 — the playground's 25/3 gets rewritten, because a step-distilled model at high CFG burns out.
 
 Open <http://127.0.0.1:8000/>. On boot the page probes `/health`; if a local backend answers it
 fills the **Endpoint** field with `/v1/images/generations` (the hint next to it reads **local GPU**),

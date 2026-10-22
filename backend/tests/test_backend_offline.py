@@ -58,11 +58,17 @@ fake_config = types.ModuleType("config")
 fake_config.MODE = "disk"
 fake_config.MODEL_ID = "openmoss/MOSS-Image-SFT"
 fake_config.build_pipeline = lambda *a, **k: FakePipe()
+# turbo state, toggled by the tests below (app reads these at call time)
+fake_config.TURBO = False
+fake_config.TURBO_ACTIVE = False
+fake_config.TURBO_STEPS = 8
+fake_config.TURBO_CFG = 1.0
+fake_config.TURBO_ERROR = None
 sys.modules["config"] = fake_config
 
 import app as backend  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from util import clamp_geometry  # noqa: E402
+from util import clamp_geometry, resolve_sampling  # noqa: E402
 
 FAILED: list[str] = []
 
@@ -196,6 +202,47 @@ def main() -> int:
 
         r = client.post("/v1/images/generations", json={"prompt": "x", "size": "wide"})
         check("compat: bad size -> 422", r.status_code == 422)
+
+        # --- turbo (8-step OPD LoRA) clamping ---
+        check("resolve_sampling leaves 25/3 alone without turbo", resolve_sampling(25, 3.0) == (25, 3.0))
+        check("resolve_sampling clamps 25/3 -> 8/1 with turbo", resolve_sampling(25, 3.0, turbo=True) == (8, 1.0))
+        check("resolve_sampling keeps an already-low setting", resolve_sampling(4, 0.5, turbo=True) == (4, 0.5))
+        check("/health exposes turbo state",
+              client.get("/health").json()["turbo"] == {"enabled": False, "active": False,
+                                                        "steps": 8, "cfg": 1.0, "error": None},
+              str(client.get("/health").json()["turbo"]))
+
+        fake_config.TURBO = fake_config.TURBO_ACTIVE = True
+        check("/health reports turbo active", client.get("/health").json()["turbo"]["active"] is True)
+
+        # the playground sends 25 steps / guidance 3.0 -- distilled model must not honour that
+        r = client.post("/v1/images/generations", json={
+            "prompt": "turbo path", "size": "1024x1024",
+            "num_inference_steps": 25, "guidance_scale": 3,
+        })
+        u = r.json()["usage"]
+        check("compat: turbo clamps 25 steps -> 8", u["num_inference_steps"] == 8, str(u))
+
+        r = client.post("/api/generate", json={"prompt": "turbo async", "num_inference_steps": 25, "cfg_scale": 5})
+        tid = r.json()["job_id"]
+        for _ in range(200):
+            s = client.get(f"/api/jobs/{tid}").json()
+            if s["status"] in ("done", "error", "cancelled"):
+                break
+            time.sleep(0.05)
+        meta = client.get(f"/api/jobs/{tid}/metadata").json()
+        check("async: turbo clamps steps and CFG",
+              s["status"] == "done" and meta["num_inference_steps"] == 8 and meta["cfg_scale"] == 1.0,
+              f"steps={meta.get('num_inference_steps')} cfg={meta.get('cfg_scale')}")
+
+        r = client.post("/v1/images/generations", json={"prompt": "defaults", "size": "512x512"})
+        check("compat: turbo default is 8 steps",
+              r.json()["usage"]["num_inference_steps"] == 8, str(r.json()["usage"]))
+
+        fake_config.TURBO = fake_config.TURBO_ACTIVE = False
+        r = client.post("/v1/images/generations", json={"prompt": "back to normal", "size": "512x512"})
+        check("compat: turbo off restores 50-step default",
+              r.json()["usage"]["num_inference_steps"] == 50, str(r.json()["usage"]))
 
         # --- same-origin static serving (no CORS, no second process) ---
         root = client.get("/")

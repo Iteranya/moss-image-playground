@@ -15,6 +15,7 @@ Three offload strategies, all taken from DiffSynth's own docs
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 try:
     import torch
@@ -23,6 +24,20 @@ except ModuleNotFoundError:  # MOSS_FAKE=1 dev mode, or a fresh venv before torc
 
 MODEL_ID = os.environ.get("MOSS_MODEL_ID", "openmoss/MOSS-Image-SFT")
 MODE = os.environ.get("MOSS_MODE", "disk").lower()
+
+# --- optional 8-step acceleration -------------------------------------------------
+# DiffSynth publishes an OPD step-distilled LoRA for MOSS-Image-SFT (50 steps -> 8).
+# Official recipe: pipe.load_lora(pipe.dit, "...model-8steps.safetensors") + num_inference_steps=8,
+# cfg_scale=1.0. See examples/moss_image/model_training/special/opd/.
+TURBO = os.environ.get("MOSS_TURBO", "0") not in ("0", "false", "False", "")
+TURBO_STEPS = int(os.environ.get("MOSS_TURBO_STEPS", "8"))
+TURBO_CFG = float(os.environ.get("MOSS_TURBO_CFG", "1.0"))
+TURBO_LORA_ID = os.environ.get("MOSS_TURBO_LORA_ID", "DiffSynth-Studio/MOSS-Image-SFT-TurboLoRA")
+TURBO_LORA_FILE = os.environ.get("MOSS_TURBO_LORA_FILE", "model-8steps.safetensors")
+
+# set by build_pipeline(): only clamp steps/CFG when the adapter actually loaded
+TURBO_ACTIVE = False
+TURBO_ERROR: str | None = None
 
 _FILES = {
     "dit": "transformer/diffusion_pytorch_model*.safetensors",
@@ -102,6 +117,30 @@ def vram_limit(reserve_gib: float | None = None) -> float:
     return max(0.0, total - reserve_gib)
 
 
+def resolve_turbo_lora() -> str:
+    """Local path to the 8-step OPD LoRA, downloading it from ModelScope on first use."""
+    explicit = os.environ.get("MOSS_TURBO_LORA")
+    if explicit:
+        if not Path(explicit).is_file():
+            raise FileNotFoundError(f"MOSS_TURBO_LORA={explicit!r} does not exist")
+        return explicit
+
+    base = Path(
+        os.environ.get("MOSS_MODEL_DIR")
+        or os.environ.get("DIFFSYNTH_MODEL_BASE_PATH")
+        or "./models"
+    )
+    cached = base / TURBO_LORA_FILE
+    if cached.is_file():
+        return str(cached)
+
+    print(f"[moss] downloading turbo LoRA {TURBO_LORA_ID}/{TURBO_LORA_FILE} (~621MB) ...", flush=True)
+    from modelscope.hub.file_download import model_file_download
+
+    path = model_file_download(TURBO_LORA_ID, TURBO_LORA_FILE, cache_dir=str(base / "modelscope"))
+    return str(path)
+
+
 def _fake_pipeline():
     """MOSS_FAKE=1: stand-in pipeline so the frontend can be developed on any machine.
 
@@ -155,4 +194,17 @@ def build_pipeline(mode: str = MODE, reserve_gib: float | None = None):
         tokenizer_config=ModelConfig(model_id=MODEL_ID, origin_file_pattern=_FILES["tok"]),
         vram_limit=vram_limit(reserve_gib),
     )
+
+    if TURBO:
+        global TURBO_ACTIVE, TURBO_ERROR
+        try:
+            lora = resolve_turbo_lora()
+            pipe.load_lora(pipe.dit, lora)
+            TURBO_ACTIVE = True
+            print(f"[moss] TURBO on: 8-step LoRA loaded from {lora} "
+                  f"(steps<={TURBO_STEPS}, cfg<={TURBO_CFG})")
+        except Exception as exc:
+            # A failed adapter must not take the whole server down: run at full steps instead.
+            TURBO_ERROR = f"{type(exc).__name__}: {exc}"
+            print(f"[moss] TURBO FAILED, falling back to full steps: {TURBO_ERROR}")
     return pipe

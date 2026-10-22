@@ -16,6 +16,15 @@ static/dev.html   debug page for the async job API (progress bar, cancel)
 tests/            offline test of the whole API surface, no GPU required
 ```
 
+## Why self-host at all
+
+The hosted `api.mosi.cn` endpoint is free, so throughput isn't the reason to run this. The reason is
+that the weights here are the **raw MOSS-Image-SFT checkpoint** with no provider-side filter, and
+nothing between you and the output. Note the default negative prompt is
+`worst quality, bad anatomy, watermark, jpeg artifact` — the upstream guide suggests adding `nsfw`
+to it, and this backend deliberately does not, because politely refusing to draw things is the exact
+behaviour you are self-hosting to escape. Pass your own `negative_prompt` if you want it back.
+
 ## Why this works on 16GB of RAM
 
 MOSS-Image-SFT is 5B DiT + **Qwen3.5 9B text encoder** + FLUX.2 VAE. In bf16 that's ~27GB of
@@ -64,6 +73,9 @@ $env:MOSS_FAKE="1"; uvicorn app:app --port 8000
 
 # the real thing (loads once at startup; expect minutes with disk offload)
 uvicorn app:app --port 8000
+
+# same, with the 8-step acceleration LoRA (~4-6x less sampling compute):
+$env:MOSS_TURBO="1"; uvicorn app:app --port 8000
 ```
 
 Then open <http://127.0.0.1:8000/>. The page probes `/health`, finds the backend, fills its
@@ -77,6 +89,40 @@ python probe.py --size 1024 --steps 12
 
 First run downloads ~27GB. The script prints first-step time, steady-state s/step, total time,
 peak VRAM, and an extrapolated 50-step cost. If it OOMs, drop to `--size 896` or `768`.
+
+## Faster: the 8-step Turbo LoRA
+
+DiffSynth ships an OPD step-distilled adapter for MOSS-Image-SFT — 621MB, applied to the same
+pipeline: `DiffSynth-Studio/MOSS-Image-SFT-TurboLoRA / model-8steps.safetensors`. Official recipe
+is `pipe.load_lora(pipe.dit, …)` + `num_inference_steps=8, cfg_scale=1.0`.
+
+`MOSS_TURBO=1` makes the backend do that at startup:
+
+- downloads the adapter on first run (into `DIFFSYNTH_MODEL_BASE_PATH`/`MOSS_MODEL_DIR`, default `./models`)
+- `pipe.load_lora(pipe.dit, path)` after the pipeline is built
+- **clamps steps to 8 and CFG to 1.0** server-side, because a distilled model at 25 steps / CFG 3
+  does not just waste time, it produces burnt output. The playground's 25/3 gets rewritten to 8/1.
+- `/health` reports `turbo: {enabled, active, steps, cfg, error}`
+
+Why it is ~4-6x rather than 3x: 25→8 steps is 3.1x, and CFG 1.0 removes the negative branch
+entirely (one forward per step instead of pos + SLG-halved neg).
+
+| | steps | CFG | forwards/step | 1024² estimate |
+|---|---|---|---|---|
+| default | 25 | 3.0 | ~1.5 | 70–125 s |
+| turbo | 8 | 1.0 | 1 | 18–40 s |
+
+Caveats, honestly:
+
+- `active: false` in `/health` means the adapter did **not** load and steps stay at full — a failed
+  adapter never silently degrades you to 8-step output. The reason lands in `turbo.error`.
+- `load_lora` is documented against a **non-offloaded** DiT (the official validate script builds
+  the pipeline without `vram_config`). Loading it on top of `MOSS_MODE=disk` is the one thing here
+  I could not test without the weights. If it errors, try `MOSS_MODE=hybrid` first.
+- Distilled output is not identical to CFG-3 output: slightly flatter composition, softer
+  prompt adherence. Compare with `probe.py --steps 8 --cfg 1.0` before committing to it.
+- At 8 steps the **9B text encoder becomes the bottleneck**, so `max_sequence_length` matters more
+  than it did.
 
 ## API
 
@@ -134,6 +180,10 @@ Server-side rules, because a frontend should not be able to OOM the card:
 |---|---|---|
 | `MOSS_MODE` | `disk` | see table above |
 | `MOSS_FAKE` | unset | `1` = stand-in pipeline, no torch needed |
+| `MOSS_TURBO` | unset | `1` = load the 8-step OPD LoRA, clamp steps≤8 / CFG≤1.0 |
+| `MOSS_TURBO_STEPS` / `MOSS_TURBO_CFG` | `8` / `1.0` | turbo ceilings |
+| `MOSS_TURBO_LORA` | unset | path to a local `model-8steps.safetensors`, skips the download |
+| `MOSS_TURBO_LORA_ID` / `_FILE` | `DiffSynth-Studio/MOSS-Image-SFT-TurboLoRA` / `model-8steps.safetensors` | ModelScope source |
 | `MOSS_MODEL_ID` | `openmoss/MOSS-Image-SFT` | ModelScope id; HF id is `OpenMOSS-Team/MOSS-Image-SFT` |
 | `MOSS_VRAM_RESERVE` | `0.7` | GiB kept free; docs say set slightly under total (8GB card → ~7.3) |
 | `MOSS_COMPAT_MAX_PIXELS` | `1048576` | pixel budget for the `/v1` endpoint |
@@ -170,8 +220,14 @@ Server-side rules, because a frontend should not be able to OOM the card:
 `python tests/test_backend_offline.py` stubs torch + the pipeline and exercises the real FastAPI
 app: geometry clamping, queueing, progress reporting, seed handling, PNG delivery, metadata
 sidecar, 422 on bad input, mid-run cancellation, the `/v1/images/generations` compat shape
-(the playground's 1776×1168 default arriving as 1248×832), `b64_json`, and whitelisted static
-hosting. 28/28 pass.
+(the playground's 1776×1168 default arriving as 1248×832), `b64_json`, whitelisted static
+hosting, and turbo clamping in both directions (25/3 → 8/1 when active, untouched when off).
+**40/40 pass.**
+
+Also checked by hand, since they need a real server: `MOSS_FAKE=1 MOSS_TURBO=1` boots and reports
+`turbo: {enabled: true, active: false}` — i.e. "asked for, but no adapter loaded, so do not clamp".
+That is the failure mode that matters: a missing or broken LoRA must never silently give you
+8-step output at CFG 1.
 
 What is **not** verified: actual inference. There is no GPU and no 27GB of weights in the dev
 environment, so `probe.py` and the real model path are untested until they run on the GPU box.
