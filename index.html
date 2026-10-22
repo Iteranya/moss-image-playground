@@ -123,11 +123,11 @@
 </header>
 <div id="hostWarn" style="display:none;margin:0;padding:8px 20px;background:#3a2d12;
   border-bottom:1px solid #6b5320;color:#f0d08a;font-size:12.5px">
-  <b>Hosted copy:</b> the MOSS API only accepts <code>localhost</code> origins (anything else gets a bare
-  403 on preflight), so generation is blocked on this URL. Run the page locally with
-  <code>start.bat</code> or <code>python -m http.server</code> to actually generate.
+  <b>Hosted copy:</b> api.mosi.cn only sends CORS headers to <code>localhost</code> and
+  <code>platform.mosi.cn</code>, so this page cannot call it directly from github.io.
+  Put your relay URL in the <b>Endpoint</b> field (see <code>relay/</code> — one Cloudflare Worker,
+  free) and generation works from here. Without a relay, run it locally with <code>start.bat</code>.
 </div>
-
 <main>
   <!-- ── settings ──────────────────────────────────────────── -->
   <section class="card">
@@ -156,6 +156,13 @@
     </div>
     <div class="hint" style="margin:-6px 0 10px">
       <span>≥256, ≤2048, ×16</span><span id="pxState">—</span>
+    </div>
+
+    <div class="field">
+      <label for="endpoint">Endpoint <span style="text-transform:none;letter-spacing:0">(optional relay)</span></label>
+      <input id="endpoint" type="text" spellcheck="false"
+             placeholder="https://api.mosi.cn/v1/images/generations  —  or your relay URL">
+      <div class="hint"><span>leave empty to call the API directly (localhost only)</span><span id="epState"></span></div>
     </div>
 
     <div class="row">
@@ -298,11 +305,10 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   sizeEl.value = localStorage.getItem('moss.size') || '1776x1168';
   $('steps').value = localStorage.getItem('moss.steps') || '25';
   $('cfg').value = localStorage.getItem('moss.cfg') || '3';
+  $('endpoint').value = localStorage.getItem('moss.endpoint') || '';
   refresh(); layoutSurface(); render();
 
-  if(!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)){
-    $('hostWarn').style.display='block';
-  }
+  updateHostWarn();
 
   const saved = localStorage.getItem('moss.layout');
   if(saved){
@@ -323,6 +329,22 @@ $('sceneType').addEventListener('input', e=>{ st.scene_type=e.target.value; sync
 $('genBrief').addEventListener('input', e=>{ st.gen_brief=e.target.value; syncJson(); });
 $('prompt').addEventListener('input', ()=>{ jsonDirty=true; refresh(); });
 addEventListener('resize', layoutSurface);
+function endpointUrl(){
+  const v = ($('endpoint').value || '').trim();
+  return v || 'https://api.mosi.cn/v1/images/generations';
+}
+function isLocalHost(){
+  return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+}
+function updateHostWarn(){
+  const relay = !!($('endpoint').value || '').trim();
+  const local = isLocalHost();
+  $('hostWarn').style.display = (!local && !relay) ? 'block' : 'none';
+  $('epState').textContent = relay ? 'via relay' : (local ? 'direct (localhost ok)' : 'direct — blocked here');
+  $('epState').style.color = (!local && !relay) ? 'var(--err)' : 'var(--muted)';
+}
+
+$('endpoint').addEventListener('input', ()=>{ localStorage.setItem('moss.endpoint', $('endpoint').value.trim()); updateHostWarn(); });
 
 function sizeWH(){
   const m = /^\s*(\d+)\s*[x×]\s*(\d+)\s*$/i.exec(sizeEl.value);
@@ -610,7 +632,7 @@ function buildPayload(){
 }
 
 async function post(key, payload){
-  const res = await fetch('https://api.mosi.cn/v1/images/generations', {
+  const res = await fetch(endpointUrl(), {
     method:'POST',
     headers:{ 'Authorization':'Bearer '+key, 'Content-Type':'application/json' },
     body: JSON.stringify(payload)
@@ -641,7 +663,7 @@ async function go(){
   btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Generating…';
   let t0=performance.now();
   const timer=setInterval(()=>{ log('waiting… '+Math.round((performance.now()-t0)/1000)+'s (ceiling ~30s)'); },1000);
-  log('POST https://api.mosi.cn/v1/images/generations');
+  log('POST ' + endpointUrl());
 
   try{
     for(let attempt=1;;attempt++){
@@ -654,6 +676,11 @@ async function go(){
       }catch(err){
         const net=(err.name==='TypeError')||/failed to fetch|networkerror|load failed/i.test(err.message);
         const steps=payload.num_inference_steps||25;
+        const elapsed=performance.now()-t0;
+        // CORS rejection is instant; a 524 gateway cut takes ~30s. Only the latter is worth retrying.
+        if(net && elapsed < 8000){
+          throw new Error('Request blocked before it ran — this origin is not on the API CORS allowlist (only localhost and platform.mosi.cn are). Put your relay URL in the Endpoint field, or run the page locally.');
+        }
         if(net && attempt===1 && steps>8){
           const lower=Math.max(8,Math.round(steps*0.5));
           log('No response — the CDN cuts the call at ~30s (HTTP 524).\nRetrying once at '+lower+' steps…','err');

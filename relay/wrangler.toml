@@ -1,0 +1,7 @@
+name = "moss-relay"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# Optional: restrict which site may use your relay. Default "*" = anyone.
+# [vars]
+# ALLOW_ORIGINS = "https://iteranya.github.io"

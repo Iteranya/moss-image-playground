@@ -63,6 +63,26 @@ read-only demo of the UI; generation only works when served from `localhost`.
 Bridging that gap needs a relay you control (e.g. a Cloudflare Worker that forwards to
 `/v1/images/generations` and adds the CORS headers), with the page's endpoint pointed at it.
 
+## Making the hosted copy work (relay)
+
+Static hosting can't fix this on its own, so run the relay in `relay/` on any box you control
+(a VPS, a Raspberry Pi, whatever):
+
+```bash
+PORT=9000 ALLOW_ORIGINS=https://<your-pages-host> python3 relay/server.py
+```
+
+No dependencies. Put TLS in front (Caddy or nginx + certbot) — an https page refuses to call an
+http relay. Then paste the relay URL into the playground's **Endpoint** field:
+
+```
+https://relay.example.com/v1/images/generations
+```
+
+The banner disappears the moment an endpoint is set, and the key still lives only in your
+browser's localStorage — it just transits your own relay on the way to the API.
+Details: [`relay/README.md`](relay/README.md).
+
 ## Files
 
 | file | what |
@@ -70,5 +90,7 @@ Bridging that gap needs a relay you control (e.g. a Cloudflare Worker that forwa
 | `index.html` | the whole app (HTML + CSS + JS, no dependencies) |
 | `demo-layout.json` | example layout loaded on first visit |
 | `ddlc-beach.json` | another example: four characters, beach episode |
+| `relay/server.py` | stdlib-only CORS relay for hosting this off localhost |
+| `relay/worker.js` | same thing as a Cloudflare Worker, if you prefer that |
 
 Licence: MIT.
