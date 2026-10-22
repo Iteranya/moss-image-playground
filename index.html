@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MOSS Image Playground</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2a323d;
+    --text:#e6edf3; --muted:#8b96a5; --accent:#7ce0c0; --accent2:#4aa8ff;
+    --warn:#e3b341; --err:#f47067; --ok:#3fb950;
+    --mono:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{border-bottom:1px solid var(--line);padding:11px 20px;display:flex;
+    align-items:center;gap:10px;flex-wrap:wrap;background:var(--panel)}
+  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px}
+  .tag{font:11px var(--mono);color:var(--muted);border:1px solid var(--line);
+    padding:2px 7px;border-radius:99px}
+  header .spacer{flex:1}
+  header a{color:var(--muted);font-size:12px;text-decoration:none}
+  header a:hover{color:var(--accent)}
+
+  main{display:grid;grid-template-columns:296px minmax(0,1fr);gap:14px;padding:14px;align-items:start}
+  @media(max-width:980px){main{grid-template-columns:1fr}}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--muted);margin:0 0 4px}
+  input,select,textarea,button{font-family:inherit;font-size:13px;color:var(--text)}
+  input[type=text],input[type=password],input[type=number],select,textarea{
+    width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:7px;
+    padding:7px 9px;outline:none}
+  input:focus,select:focus,textarea:focus{border-color:var(--accent2);
+    box-shadow:0 0 0 2px rgba(74,168,255,.15)}
+  textarea{resize:vertical;line-height:1.45}
+  .row{display:flex;gap:8px}
+  .row>*{flex:1;min-width:0}
+  .field{margin-bottom:10px}
+  .hint{font-size:11px;color:var(--muted);display:flex;justify-content:space-between;
+    gap:8px;margin-top:3px}
+  button{cursor:pointer;border:1px solid var(--line);background:var(--panel2);
+    border-radius:7px;padding:7px 11px}
+  button:hover{border-color:var(--accent2)}
+  button.primary{background:linear-gradient(180deg,#2ea043,#238636);border-color:#2ea043;
+    font-weight:600;width:100%;padding:10px;font-size:14px}
+  button.primary:disabled{opacity:.55;cursor:progress}
+  button.sm{padding:4px 9px;font-size:11.5px;flex:none}
+  .chk{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+  .chk input{accent-color:var(--accent2)}
+  #status{font:11.5px var(--mono);color:var(--muted);white-space:pre-wrap;margin-top:9px;
+    max-height:120px;overflow:auto}
+  #status.err{color:var(--err)} #status.ok{color:var(--ok)}
+
+  .tabs{display:flex;gap:6px;margin-bottom:10px;align-items:center}
+  .tabs button{border-radius:99px;padding:5px 13px;font-size:12px;color:var(--muted)}
+  .tabs button.on{background:var(--panel2);color:var(--text);border-color:var(--accent2)}
+
+  .surface{position:relative;width:100%;background-color:#0f141b;
+    border:1px solid var(--line);border-radius:6px;overflow:hidden;touch-action:none;
+    cursor:crosshair;user-select:none}
+  .surface.grid{background-image:
+      linear-gradient(#141a23 1px,transparent 1px),
+      linear-gradient(90deg,#141a23 1px,transparent 1px);
+    background-size:8.3333% 8.3333%}
+  .box{position:absolute;border:1.5px solid var(--accent2);border-radius:3px;
+    background:rgba(74,168,255,.10);cursor:move;overflow:hidden}
+  .box .lbl{position:absolute;top:0;left:0;font:10px/1.4 var(--mono);padding:1px 5px;
+    background:rgba(74,168,255,.92);color:#06101c;border-bottom-right-radius:3px;
+    white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .box.sel{border-color:var(--accent);background:rgba(124,224,192,.14);z-index:9}
+  .box.sel .lbl{background:var(--accent)}
+  .box .hd{position:absolute;right:-4px;bottom:-4px;width:12px;height:12px;
+    background:var(--accent);border:1px solid #0b1118;border-radius:2px;
+    cursor:nwse-resize;display:none}
+  .box.sel .hd{display:block}
+  .box.panel{border-style:dashed;border-color:#7a8797;background:rgba(139,150,165,.08)}
+  .box.panel .lbl{background:#7a8797}
+  .box.text{border-color:var(--warn);background:rgba(227,179,65,.10)}
+  .box.text .lbl{background:var(--warn)}
+  .empty{position:absolute;inset:0;display:grid;place-items:center;color:#4a5563;
+    font-size:12px;text-align:center;pointer-events:none;padding:20px;line-height:1.7}
+
+  .elist{display:flex;flex-direction:column;gap:6px;margin-top:10px;max-height:230px;overflow:auto}
+  .erow{display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border:1px solid var(--line);
+    border-radius:7px;background:var(--panel2);cursor:pointer}
+  .erow:hover{border-color:#3a4653}
+  .erow.sel{border-color:var(--accent)}
+  .erow .num{font:10px var(--mono);color:var(--muted);min-width:15px;padding-top:2px}
+  .erow .who{flex:1;min-width:0}
+  .erow .cap{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#c9d3df}
+  .erow .meta{font:10px var(--mono);color:var(--muted)}
+
+  .canvas{display:grid;place-items:center;background:
+    repeating-conic-gradient(#141920 0% 25%,#161c24 0% 50%) 50%/22px 22px;
+    border:1px solid var(--line);border-radius:8px;min-height:300px;padding:10px}
+  .canvas img{max-width:100%;max-height:62vh;border-radius:4px;display:block}
+  .placeholder{color:#4d5866;font-size:13px;text-align:center;padding:26px}
+  .meta{display:flex;gap:14px;flex-wrap:wrap;font:11.5px var(--mono);color:var(--muted);margin-top:8px}
+  details{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:12px}
+  summary{cursor:pointer;font-size:12px;color:var(--muted)}
+  pre{margin:8px 0 0;font:11px var(--mono);color:#a9b6c5;white-space:pre-wrap;
+    word-break:break-word;max-height:240px;overflow:auto}
+  .spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.25);
+    border-top-color:#fff;border-radius:50%;display:inline-block;vertical-align:-2px;
+    margin-right:7px;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .hist{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .hist img{width:58px;height:58px;object-fit:cover;border-radius:5px;
+    border:1px solid var(--line);cursor:pointer}
+  .hist img:hover{border-color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>MOSS Image Playground</h1>
+  <span class="tag">moss-image-sft-1.0</span>
+  <span class="tag">POST /v1/images/generations</span>
+  <span class="spacer"></span>
+  <a href="https://platform.mosi.cn/en/docs/reference/layout-image-generation" target="_blank" rel="noopener">API docs ↗</a>
+</header>
+
+<main>
+  <!-- ── settings ──────────────────────────────────────────── -->
+  <section class="card">
+    <div class="field">
+      <label for="key">API Key</label>
+      <input id="key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
+      <div class="hint"><span>localStorage only</span><span id="keyState"></span></div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="model">Model</label>
+        <select id="model">
+          <option value="moss-image-sft-1.0">moss-image-sft-1.0</option>
+          <option value="moss-image-base-1.0">moss-image-base-1.0</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="size">Canvas (WxH)</label>
+        <input id="size" type="text" value="1776x1168" spellcheck="false" list="sizes">
+        <datalist id="sizes">
+          <option>1776x1168</option><option>1776x1184</option><option>1536x1024</option>
+          <option>1024x1024</option><option>1024x1536</option><option>1456x1456</option>
+        </datalist>
+      </div>
+    </div>
+    <div class="hint" style="margin:-6px 0 10px">
+      <span>≥256, ≤2048, ×16</span><span id="pxState">—</span>
+    </div>
+
+    <div class="row">
+      <div class="field"><label for="steps">Steps</label>
+        <input id="steps" type="number" min="1" max="100" value="25"></div>
+      <div class="field"><label for="cfg">Guidance</label>
+        <input id="cfg" type="number" min="0" max="10" step="0.1" value="3"></div>
+      <div class="field"><label for="seed">Seed</label>
+        <input id="seed" type="number" min="0" placeholder="rand"></div>
+    </div>
+    <div class="hint" id="timeState" style="margin:-4px 0 10px"><span>est. time</span><span>—</span></div>
+
+    <div class="field"><label for="negative">Negative prompt</label>
+      <input id="negative" type="text" placeholder="nsfw, worst quality, bad anatomy…"></div>
+
+    <div class="field"><label class="chk"><input id="wm" type="checkbox"> Visible watermark</label></div>
+
+    <button class="primary" id="go">Generate image</button>
+    <div id="status"></div>
+  </section>
+
+  <!-- ── editor + result ───────────────────────────────────── -->
+  <section>
+    <div class="card">
+      <div class="tabs">
+        <button id="tabEdit" class="on">Layout editor</button>
+        <button id="tabJson">JSON</button>
+        <span style="flex:1"></span>
+        <button class="sm" id="btnImport" title="Parse the JSON tab back into boxes">JSON → boxes</button>
+        <button class="sm" id="btnClear">Clear all</button>
+      </div>
+
+      <!-- editor pane -->
+      <div id="paneEdit">
+        <div class="field">
+          <label for="sceneType">scene_type</label>
+          <input id="sceneType" type="text" placeholder="poster / chaotic anime ensemble / candid photograph…">
+        </div>
+        <div class="field">
+          <label for="genBrief">gen_brief — the whole scene (style, composition, what happens)</label>
+          <textarea id="genBrief" rows="3" style="font-size:12.5px"
+            placeholder="A wide sunlit courtyard seen slightly from above; ten students tumble around a tipping snack tray…"></textarea>
+          <div class="hint"><span>drag on the canvas to draw · click a box to edit · Del removes it · drag the corner to resize</span>
+            <span id="nBoxes">0 boxes</span></div>
+        </div>
+
+        <div class="surface grid" id="surface">
+          <div class="empty" id="surfHint">drag anywhere to draw your first box<br>
+            <span style="opacity:.65">boxes are stored proportionally — they follow the canvas size</span></div>
+        </div>
+
+        <div class="card" id="selPanel" style="display:none;margin-top:10px;background:var(--panel2)">
+          <div class="row">
+            <div class="field" style="margin-bottom:8px"><label>type</label>
+              <select id="elType">
+                <option value="obj">obj — object / character</option>
+                <option value="panel">panel — background region</option>
+                <option value="text">text — literal words</option>
+              </select></div>
+            <div class="field" style="margin-bottom:8px"><label>salience</label>
+              <select id="elSal">
+                <option value="primary">primary</option>
+                <option value="secondary">secondary</option>
+                <option value="background">background</option>
+              </select></div>
+          </div>
+          <div class="field" id="textField" style="display:none;margin-bottom:8px">
+            <label>text to render (verbatim)</label>
+            <input id="elText" type="text" placeholder="EXPLORE">
+          </div>
+          <div class="field" style="margin-bottom:8px">
+            <label id="idLabel">identity — what this thing is and looks like</label>
+            <textarea id="elId" rows="3" style="font-size:12.5px"
+              placeholder="Asuma Toki, left edge, leaning in, deadpan — default maid uniform"></textarea>
+          </div>
+          <div class="row" style="align-items:center">
+            <span class="hint" id="elBox" style="margin:0"></span>
+            <button class="sm" id="elDup">Duplicate</button>
+            <button class="sm" id="elDel" style="color:var(--err)">Delete</button>
+          </div>
+        </div>
+        <div class="elist" id="elist"></div>
+
+      </div>
+
+      <!-- json pane -->
+      <div id="paneJson" style="display:none">
+        <textarea id="prompt" spellcheck="false"
+          style="min-height:400px;font:11.5px var(--mono);white-space:pre-wrap"></textarea>
+        <div class="hint"><span id="promptKind">—</span><span id="charCount">0 / 4000</span></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px;padding:10px">
+      <div class="canvas" id="canvas">
+        <div class="placeholder" id="ph">Nothing generated yet.</div>
+      </div>
+      <div class="meta" id="meta"></div>
+      <div id="actions" style="display:none;gap:8px;margin-top:9px">
+        <button id="dl">Download PNG</button>
+        <button id="open">Open original</button>
+        <button id="again">Regenerate</button>
+      </div>
+      <div class="hist" id="hist"></div>
+    </div>
+
+    <details>
+      <summary>Request payload</summary>
+      <pre id="req">—</pre>
+    </details>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const keyEl=$('key'), modelEl=$('model'), sizeEl=$('size');
+const statusEl=$('status'), canvasEl=$('canvas'), metaEl=$('meta');
+const surface=$('surface'), elistEl=$('elist');
+let lastUrl=null, busy=false, selId=null, dragState=null, seq=1, jsonDirty=false;
+
+// boxes are stored NORMALIZED (0..1) so they survive any canvas change
+const st = { scene_type:'', gen_brief:'', els:[] };
+const COLORS = {obj:'#4aa8ff', panel:'#7a8797', text:'#e3b341'};
+
+/* ── boot ───────────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', async ()=>{
+  keyEl.value = localStorage.getItem('moss.key') || '';
+  modelEl.value = localStorage.getItem('moss.model') || 'moss-image-sft-1.0';
+  sizeEl.value = localStorage.getItem('moss.size') || '1776x1168';
+  $('steps').value = localStorage.getItem('moss.steps') || '25';
+  $('cfg').value = localStorage.getItem('moss.cfg') || '3';
+  refresh(); layoutSurface(); render();
+
+  const saved = localStorage.getItem('moss.layout');
+  if(saved){
+    try{ importLayout(JSON.parse(saved), true); }catch(e){}
+  } else {
+    try{                                    // demo layout shipped next to the page
+      const r = await fetch('demo-layout.json');
+      if(r.ok) importLayout(await r.json(), false);
+    }catch(e){}
+  }
+});
+
+keyEl.addEventListener('input', ()=>localStorage.setItem('moss.key', keyEl.value.trim()));
+modelEl.addEventListener('change', ()=>localStorage.setItem('moss.model', modelEl.value));
+sizeEl.addEventListener('input', ()=>{ localStorage.setItem('moss.size', sizeEl.value);
+  refresh(); layoutSurface(); render(); });
+$('steps').addEventListener('input', e=>{ localStorage.setItem('moss.steps', e.target.value); refresh(); });
+$('cfg').addEventListener('input', e=>localStorage.setItem('moss.cfg', e.target.value));
+$('sceneType').addEventListener('input', e=>{ st.scene_type=e.target.value; syncJson(); });
+$('genBrief').addEventListener('input', e=>{ st.gen_brief=e.target.value; syncJson(); });
+$('prompt').addEventListener('input', ()=>{ jsonDirty=true; refresh(); });
+addEventListener('resize', layoutSurface);
+
+function sizeWH(){
+  const m = /^\s*(\d+)\s*[x×]\s*(\d+)\s*$/i.exec(sizeEl.value);
+  return m ? [+m[1], +m[2]] : [1024,1024];
+}
+function layoutSurface(){
+  const [w,h] = sizeWH();
+  surface.style.height = Math.round(surface.clientWidth * h / w) + 'px';
+}
+
+/* ── validation readout ─────────────────────────────────── */
+function refresh(){
+  const [w,h] = sizeWH(), px=w*h;
+  const ok = [w,h].every(v=>v>=256&&v<=2048&&v%16===0) && px<=2097152;
+  $('pxState').textContent = px.toLocaleString('en-US')+' px'+(ok?' ✓':' ✗');
+  $('pxState').style.color = ok?'var(--ok)':'var(--err)';
+
+  const steps = parseInt($('steps').value,10)||25;
+  const est = 3.4 + 0.404*px*steps/1e6;
+  const tEl=$('timeState');
+  tEl.lastElementChild.textContent = '~'+est.toFixed(0)+'s (cap ~30s)'+(est>27?'  ⚠ likely 524':'');
+  tEl.lastElementChild.style.color = est>27?'var(--warn)':'var(--muted)';
+
+  const n = $('prompt').value.length;
+  $('charCount').textContent = n+' / 4000';
+  $('charCount').style.color = n>4000?'var(--warn)':'var(--muted)';
+  $('promptKind').textContent = st.els.length
+    ? 'layout JSON · '+st.els.length+' elements'
+    : (st.gen_brief?'plain text':'empty');
+}
+
+/* ── state → JSON ───────────────────────────────────────── */
+function toLayout(){
+  const [W,H] = sizeWH();
+  const elements = st.els.map(e=>{
+    const x1=Math.round(e.x*W-W/2),       y1=Math.round(e.y*H-H/2);
+    const x2=Math.round((e.x+e.w)*W-W/2), y2=Math.round((e.y+e.h)*H-H/2);
+    const o={ type:e.type, salience:e.salience };
+    if(e.type==='text') o.text = e.text||'';
+    o.identity = e.identity||'';
+    o.bbox = [y1,x1,y2,x2];              // yxyx, centred on the canvas
+    return o;
+  });
+  const out = { scene_type: st.scene_type||'image', gen_brief: st.gen_brief||'' };
+  if(elements.length){ out.elements=elements; out.bbox_coord_space='abs_centralized'; }
+  return out;
+}
+function syncJson(){
+  const out = st.els.length ? toLayout() : (st.gen_brief||'');
+  $('prompt').value = typeof out==='string' ? out : JSON.stringify(out,null,1);
+  jsonDirty=false;
+  localStorage.setItem('moss.layout', JSON.stringify({
+    scene_type:st.scene_type, gen_brief:st.gen_brief,
+    els:st.els.map(({id,...r})=>r)
+  }));
+  refresh();
+}
+
+/* ── JSON → state (both schemas) ────────────────────────── */
+function importLayout(obj, quiet){
+  st.els=[]; seq=1;
+  if(!obj || typeof obj!=='object') return false;
+
+  const els = obj.elements || obj.items || [];
+  st.scene_type = obj.scene_type || '';
+  st.gen_brief  = obj.gen_brief || (obj.summary && obj.summary.caption) || '';
+  if(!Array.isArray(els) || !els.length){ render(); syncJson(); return false; }
+
+  // snap the canvas to the authored one when the boxes imply a bigger frame
+  let mx=0,my=0;
+  els.forEach(e=>{ const b=e.bbox||[]; if(b.length===4){
+    mx=Math.max(mx,Math.abs(b[1]),Math.abs(b[3]));
+    my=Math.max(my,Math.abs(b[0]),Math.abs(b[2])); }});
+  const [W,H]=sizeWH();
+  const centred = (obj.bbox_coord_space==='abs_centralized') || (mx>W/2+8 || my>H/2+8);
+  if(centred && mx && my){
+    const w=Math.min(2048, Math.round(mx*2/16)*16), h=Math.min(2048, Math.round(my*2/16)*16);
+    if(w*h<=2097152 && (w!==W||h!==H)){
+      sizeEl.value=w+'x'+h; localStorage.setItem('moss.size',sizeEl.value);
+      layoutSurface();
+    }
+  }
+  const [W2,H2]=sizeWH();
+
+  els.forEach(e=>{
+    const b = (e.bbox&&e.bbox.length===4) ? e.bbox : [0,0,0,0];
+    const [y1,x1,y2,x2]=b;
+    const nx1=(x1+W2/2)/W2, ny1=(y1+H2/2)/H2;
+    const nx2=(x2+W2/2)/W2, ny2=(y2+H2/2)/H2;
+    const x=Math.max(0,Math.min(nx1,nx2)), y=Math.max(0,Math.min(ny1,ny2));
+    const w=Math.min(1-x,Math.abs(nx2-nx1)), h=Math.min(1-y,Math.abs(ny2-ny1));
+    let type=e.type||'obj', sal=e.salience||'primary';
+    if(e.label){                                   // compact schema
+      type = e.label==='text'?'text':(e.label==='panel'?'panel':'obj');
+      sal  = e.label==='panel'?'background':'primary';
+    }
+    st.els.push({ id:seq++, type, salience:sal,
+      identity: e.identity||e.caption||'', text: e.text||'', x,y,w,h });
+  });
+  $('sceneType').value=st.scene_type; $('genBrief').value=st.gen_brief;
+  if(st.els.length && !selId) selId=st.els[0].id;   // show the inspector straight away
+  render(); syncJson();
+  if(!quiet) log('Imported '+st.els.length+' boxes','ok');
+  return true;
+}
+
+/* ── rendering ──────────────────────────────────────────── */
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function render(){
+  [...surface.querySelectorAll('.box')].forEach(b=>b.remove());
+  $('surfHint').style.display = st.els.length ? 'none' : 'grid';
+
+  st.els.forEach((e,i)=>{
+    const d=document.createElement('div');
+    d.className='box'+(e.type==='panel'?' panel':'')+(e.type==='text'?' text':'')+(e.id===selId?' sel':'');
+    d.style.left=(e.x*100)+'%'; d.style.top=(e.y*100)+'%';
+    d.style.width=(e.w*100)+'%'; d.style.height=(e.h*100)+'%';
+    d.dataset.id=e.id;
+    d.innerHTML='<span class="lbl">'+(i+1)+' '+e.type+(e.type==='text'&&e.text?': '+esc(e.text):'')+
+      '</span><span class="hd"></span>';
+    surface.appendChild(d);
+  });
+
+  elistEl.innerHTML='';
+  if(!st.els.length) elistEl.innerHTML='<div class="hint">no boxes yet</div>';
+  st.els.forEach((e,i)=>{
+    const r=document.createElement('div');
+    r.className='erow'+(e.id===selId?' sel':'');
+    r.innerHTML='<span class="num">'+(i+1)+'</span><div class="who">'+
+      '<div class="cap">'+esc(e.identity||e.text||'(empty description)')+'</div>'+
+      '<div class="meta">'+e.type+' · '+e.salience+' · '+Math.round(e.w*100)+'%×'+Math.round(e.h*100)+'%</div>'+
+      '</div><button class="sm" data-del="'+e.id+'">✕</button>';
+    r.onclick=ev=>{
+      if(ev.target.dataset.del){ ev.stopPropagation(); removeEl(+ev.target.dataset.del); return; }
+      select(e.id);
+    };
+    elistEl.appendChild(r);
+  });
+  $('nBoxes').textContent = st.els.length+' boxes';
+  renderSel();
+}
+
+function renderSel(){
+  const e = st.els.find(x=>x.id===selId);
+  $('selPanel').style.display = e?'block':'none';
+  if(!e) return;
+  $('elType').value=e.type; $('elSal').value=e.salience;
+  $('elId').value=e.identity; $('elText').value=e.text||'';
+  $('textField').style.display = e.type==='text'?'block':'none';
+  $('idLabel').textContent = e.type==='text'
+    ? 'identity — how/where the words sit (typography, colour)'
+    : 'identity — what this thing is and looks like';
+  const [W,H]=sizeWH();
+  $('elBox').textContent='x '+Math.round(e.x*W)+' y '+Math.round(e.y*H)+'  ·  '+
+    Math.round(e.w*W)+'×'+Math.round(e.h*H)+' px';
+}
+
+function select(id){ selId=id; render(); }
+function removeEl(id){
+  st.els=st.els.filter(e=>e.id!==id);
+  if(selId===id) selId=null;
+  render(); syncJson();
+}
+
+$('elType').onchange = ev=>{ const e=st.els.find(x=>x.id===selId); if(!e) return;
+  e.type=ev.target.value; render(); syncJson(); };
+$('elSal').onchange = ev=>{ const e=st.els.find(x=>x.id===selId); if(!e) return;
+  e.salience=ev.target.value; render(); syncJson(); };
+$('elId').oninput = ev=>{ const e=st.els.find(x=>x.id===selId); if(!e) return;
+  e.identity=ev.target.value; syncJson();
+  const cap=elistEl.querySelector('.erow.sel .cap');
+  if(cap) cap.textContent=ev.target.value||'(empty description)'; };
+$('elText').oninput = ev=>{ const e=st.els.find(x=>x.id===selId); if(!e) return;
+  e.text=ev.target.value; syncJson(); };
+$('elDup').onclick = ()=>{ const e=st.els.find(x=>x.id===selId); if(!e) return;
+  const c={...e, id:seq++, x:Math.min(.95,e.x+.02), y:Math.min(.95,e.y+.02)};
+  st.els.push(c); select(c.id); syncJson(); };
+$('elDel').onclick = ()=>removeEl(selId);
+$('btnClear').onclick = ()=>{ if(st.els.length && !confirm('Delete all boxes?')) return;
+  st.els=[]; selId=null; render(); syncJson(); };
+
+/* ── drawing ────────────────────────────────────────────── */
+function npt(ev){
+  const r=surface.getBoundingClientRect();
+  return { x:Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width)),
+           y:Math.min(1,Math.max(0,(ev.clientY-r.top)/r.height)) };
+}
+
+surface.addEventListener('pointerdown', ev=>{
+  const boxEl=ev.target.closest('.box');
+  const p=npt(ev);
+  if(boxEl){
+    const id=+boxEl.dataset.id, e=st.els.find(x=>x.id===id);
+    select(id);
+    dragState = ev.target.classList.contains('hd')
+      ? {mode:'resize', id, ax:e.x, ay:e.y}
+      : {mode:'move', id, ox:e.x, oy:e.y, sx:p.x, sy:p.y};
+  } else {
+    const e={ id:seq++, type:'obj', salience:'primary', identity:'', text:'',
+              x:p.x, y:p.y, w:0, h:0 };
+    st.els.push(e); selId=e.id;
+    dragState={mode:'new', id:e.id, x0:p.x, y0:p.y};
+    render();
+  }
+  try{ surface.setPointerCapture(ev.pointerId); }catch(e){}
+  ev.preventDefault();
+});
+
+surface.addEventListener('pointermove', ev=>{
+  if(!dragState) return;
+  const p=npt(ev), e=st.els.find(x=>x.id===dragState.id); if(!e) return;
+  const d=surface.querySelector('.box[data-id="'+e.id+'"]');
+
+  if(dragState.mode==='new'){
+    e.x=Math.min(dragState.x0,p.x); e.y=Math.min(dragState.y0,p.y);
+    e.w=Math.abs(p.x-dragState.x0); e.h=Math.abs(p.y-dragState.y0);
+    if(d){ d.style.left=e.x*100+'%'; d.style.top=e.y*100+'%';
+           d.style.width=e.w*100+'%'; d.style.height=e.h*100+'%'; }
+  } else if(dragState.mode==='move'){
+    e.x=Math.min(1-e.w, Math.max(0, dragState.ox+(p.x-dragState.sx)));
+    e.y=Math.min(1-e.h, Math.max(0, dragState.oy+(p.y-dragState.sy)));
+    if(d){ d.style.left=e.x*100+'%'; d.style.top=e.y*100+'%'; }
+  } else {
+    e.w=Math.min(1-e.x, Math.max(.02, p.x-dragState.ax));
+    e.h=Math.min(1-e.y, Math.max(.02, p.y-dragState.ay));
+    if(d){ d.style.width=e.w*100+'%'; d.style.height=e.h*100+'%'; }
+  }
+});
+
+surface.addEventListener('pointerup', ()=>{
+  if(!dragState) return;
+  const e=st.els.find(x=>x.id===dragState.id);
+  if(dragState.mode==='new' && e && (e.w<0.02||e.h<0.02)){
+    st.els=st.els.filter(x=>x.id!==e.id); selId=null;
+  }
+  dragState=null; render(); syncJson();
+});
+
+document.addEventListener('keydown', ev=>{
+  const tag=(ev.target.tagName||'').toLowerCase();
+  if(tag==='input'||tag==='textarea'||tag==='select') return;
+  if((ev.key==='Delete'||ev.key==='Backspace') && selId){ ev.preventDefault(); removeEl(selId); }
+  if(ev.key==='Escape'){ selId=null; render(); }
+  if((ev.ctrlKey||ev.metaKey)&&ev.key==='Enter') go();
+});
+
+/* ── tabs ───────────────────────────────────────────────── */
+function tab(which){
+  $('tabEdit').classList.toggle('on', which==='edit');
+  $('tabJson').classList.toggle('on', which==='json');
+  $('paneEdit').style.display = which==='edit'?'block':'none';
+  $('paneJson').style.display = which==='json'?'block':'none';
+}
+$('tabEdit').onclick=()=>tab('edit');
+$('tabJson').onclick=()=>tab('json');   // never rewrite the box while the user may be pasting
+$('btnImport').onclick=()=>{
+  try{
+    const v=$('prompt').value.trim();
+    if(!v){ log('JSON tab is empty','err'); return; }
+    if(importLayout(JSON.parse(v))) tab('edit');
+  }catch(e){ log('Not valid JSON: '+e.message,'err'); }
+};
+
+/* ── API ────────────────────────────────────────────────── */
+function log(msg, cls=''){ statusEl.className=cls; statusEl.textContent=msg; }
+
+function buildPayload(){
+  const p = { model:modelEl.value, prompt:'', n:1, response_format:'url' };
+  const typed = $('prompt').value.trim();
+  p.prompt = (jsonDirty && typed) ? typed : (st.els.length ? JSON.stringify(toLayout()) : typed);
+  const neg=$('negative').value.trim(); if(neg) p.negative_prompt=neg;
+  p.size = sizeWH().join('x');
+  const s=parseInt($('steps').value,10); if(!isNaN(s)) p.num_inference_steps=s;
+  const c=parseFloat($('cfg').value); if(!isNaN(c)) p.guidance_scale=c;
+  const sd=$('seed').value.trim(); if(sd!=='') p.seed=Number(sd);
+  p.output_watermark={ enabled:$('wm').checked };
+  return p;
+}
+
+async function post(key, payload){
+  const res = await fetch('https://api.mosi.cn/v1/images/generations', {
+    method:'POST',
+    headers:{ 'Authorization':'Bearer '+key, 'Content-Type':'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const txt = await res.text();
+  let data; try{ data=JSON.parse(txt); }
+  catch(e){ throw new Error('Non-JSON response ('+res.status+'): '+txt.slice(0,300)); }
+  if(!res.ok || data.error){
+    const e=data.error||{};
+    throw new Error([res.status+' '+(e.code||''), e.type||'', e.message||txt.slice(0,300)]
+      .filter(Boolean).join(' · '));
+  }
+  const url = data.data && data.data[0] && data.data[0].url;
+  if(!url) throw new Error('No image URL in response: '+txt.slice(0,300));
+  return data;
+}
+
+async function go(){
+  if(busy) return;
+  const key=keyEl.value.trim();
+  if(!key){ log('Missing API key. Paste it in the field above.','err'); keyEl.focus(); return; }
+  if(!st.els.length && !$('prompt').value.trim()){ log('Nothing to send — draw a box or write a prompt.','err'); return; }
+
+  let payload=buildPayload();
+  $('req').textContent=JSON.stringify(payload,null,2);
+
+  busy=true; const btn=$('go');
+  btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Generating…';
+  let t0=performance.now();
+  const timer=setInterval(()=>{ log('waiting… '+Math.round((performance.now()-t0)/1000)+'s (ceiling ~30s)'); },1000);
+  log('POST https://api.mosi.cn/v1/images/generations');
+
+  try{
+    for(let attempt=1;;attempt++){
+      try{
+        const data = await post(key, payload);
+        const secs=((performance.now()-t0)/1000).toFixed(1);
+        showImage(data.data[0].url, data, secs);
+        log('Done in '+secs+'s'+(attempt>1?' (retry, '+payload.num_inference_steps+' steps)':''),'ok');
+        return;
+      }catch(err){
+        const net=(err.name==='TypeError')||/failed to fetch|networkerror|load failed/i.test(err.message);
+        const steps=payload.num_inference_steps||25;
+        if(net && attempt===1 && steps>8){
+          const lower=Math.max(8,Math.round(steps*0.5));
+          log('No response — the CDN cuts the call at ~30s (HTTP 524).\nRetrying once at '+lower+' steps…','err');
+          payload=Object.assign({},payload,{num_inference_steps:lower});
+          $('req').textContent=JSON.stringify(payload,null,2);
+          t0=performance.now(); continue;
+        }
+        if(net) throw new Error('Failed to fetch — dropped before a response (HTTP 524 = gateway timeout at ~30s). Lower steps or canvas size.');
+        throw err;
+      }
+    }
+  }catch(err){
+    log('Error: '+err.message,'err'); console.error(err);
+  }finally{
+    clearInterval(timer); busy=false; btn.disabled=false; btn.textContent='Generate image';
+  }
+}
+
+function showImage(url, data, secs){
+  lastUrl=url;
+  const img=document.createElement('img'); img.src=url; img.alt='generated';
+  canvasEl.innerHTML=''; canvasEl.appendChild(img);
+  const u=data.usage||{};
+  metaEl.innerHTML=[ 'model '+(data.model||modelEl.value),
+    (u.output_width||'?')+'×'+(u.output_height||'?'), secs+'s',
+    'seed '+(data.seed!=null?data.seed:($('seed').value||'random')),
+    data.created?new Date(data.created*1000).toLocaleTimeString():'' ]
+    .filter(Boolean).map(s=>'<span>'+s+'</span>').join('');
+  $('actions').style.display='flex';
+  const t=document.createElement('img'); t.src=url; t.title='load this image';
+  t.onclick=()=>showImage(url,data,secs);
+  $('hist').prepend(t);
+}
+
+$('go').onclick=go;
+$('again').onclick=go;
+$('open').onclick=()=>{ if(lastUrl) window.open(lastUrl,'_blank','noopener'); };
+$('dl').onclick=async ()=>{
+  if(!lastUrl) return;
+  try{
+    const b=await (await fetch(lastUrl)).blob();
+    const a=document.createElement('a'); a.href=URL.createObjectURL(b);
+    a.download='moss-'+Date.now()+'.png'; a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){ window.open(lastUrl,'_blank','noopener'); }
+};
+</script>
+</body>
+</html>

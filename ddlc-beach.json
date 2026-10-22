@@ -1,0 +1,62 @@
+{
+ "scene_type": "sunny anime beach episode group illustration",
+ "gen_brief": "A bright, wholesome summer-holiday group picture of four girls from the same school club on an open beach, seen at eye level from a slight distance in one continuous shoreline, not separate panels. Warm late-afternoon sun from the upper right, turquoise water and a pale sky with a few soft clouds, wet sand and shallow foam in the foreground, a striped towel, a small cooler, a watermelon slice and scattered shells. The four stand and sit in one relaxed uneven half-circle, close enough to read as a single group, with staggered head heights and overlapping shoulders, never covering each other's faces. Cheerful summer mood: one waves at the viewer, one laughs over a slice of watermelon, one sits shyly under a straw hat with a book, one pouts with a popsicle. Crisp expressive anime linework, refined cel shading, pastel summer palette, natural rim light on hair. Exactly four girls, no extra people, no duplicated characters, no spectators, no text, captions, logos or watermarks. Modest swimwear and light cover-ups, friendly nonsexual framing, no suggestive angles.",
+ "elements": [
+  {
+   "type": "panel",
+   "salience": "background",
+   "identity": "Open sunny Kivotos-free beach: pale sky, turquoise sea with a low surf line, distant headland at the left horizon, wet sand and shallow foam in the foreground. A striped towel, small cooler, watermelon slice and a few shells on the sand. No extra people, no signage, no damage",
+   "bbox": [
+    -584,
+    -888,
+    584,
+    888
+   ]
+  },
+  {
+   "type": "obj",
+   "salience": "primary",
+   "identity": "Monika from Doki Doki Literature Club, standing at the centre of the group and closest to the viewer. Long light-brown hair in a high ponytail tied with a white ribbon bow, emerald-green eyes, a white one-piece swimsuit under an open sheer white beach shirt, a thin bracelet on one wrist. Relaxed, confident half-smile, one hand raised in a small wave toward the camera and the other holding a straw sun hat down at her side. Sunlight rims her hair and shoulders; her torso overlaps the girls behind her, her lower body cropped naturally at the bottom of the frame.",
+   "bbox": [
+    -120,
+    -200,
+    584,
+    200
+   ]
+  },
+  {
+   "type": "obj",
+   "salience": "secondary",
+   "identity": "Sayori from Doki Doki Literature Club, sitting on a striped beach towel at the left of the group, lower than the standing girls. Short coral-pink hair with one large red bow, bright blue eyes, a high-waisted sky-blue swimsuit with white trim and a short open beach shirt. Laughing brightly with her eyes squeezed shut, leaning slightly toward the centre while holding up a dripping slice of watermelon in both hands. A straw tote bag and a beach ball rest beside her on the sand.",
+   "bbox": [
+    40,
+    -888,
+    584,
+    -280
+   ]
+  },
+  {
+   "type": "obj",
+   "salience": "secondary",
+   "identity": "Yuri from Doki Doki Literature Club, seated on the sand at the right and slightly behind the others, knees drawn up. Very long dark-purple hair falling over one shoulder, violet eyes, a wide-brim straw hat, a lavender cover-up dress over a modest swimsuit. A thick hardcover book rests on her knees, one hand holding it closed. Shy, soft smile, eyes glancing off to the side rather than at the camera.",
+   "bbox": [
+    -180,
+    300,
+    270,
+    888
+   ]
+  },
+  {
+   "type": "obj",
+   "salience": "secondary",
+   "identity": "Natsuki from Doki Doki Literature Club, standing at the right foreground, in front of Yuri's lower body. Short pink hair in two small red ribbons, pink eyes, a yellow-and-white striped swimsuit with a short white cover-up skirt. Hip-shot pouting pose with her arms crossed, one hand holding a melting strawberry popsicle away from her body, cheeks slightly puffed, looking up and to the left with comic irritation. Her face stays fully visible above Yuri's book.",
+   "bbox": [
+    120,
+    240,
+    584,
+    700
+   ]
+  }
+ ],
+ "bbox_coord_space": "abs_centralized"
+}
