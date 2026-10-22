@@ -165,6 +165,16 @@
       <div class="hint"><span>empty = hosted API · auto-detects a local backend on :8000</span><span id="epState"></span></div>
     </div>
 
+    <div class="field" id="engineField" style="display:none">
+      <label for="engine">Engine <span style="text-transform:none;letter-spacing:0">(local backend)</span></label>
+      <select id="engine">
+        <option value="sogni">Sogni Supernet · MOSS 8-step (~1.25 Spark ≈ $0.006)</option>
+        <option value="sogni_full">Sogni Supernet · MOSS full 50-step (~8.9 Spark ≈ $0.044)</option>
+        <option value="local">This machine (local weights)</option>
+      </select>
+      <div class="hint"><span id="engineHint">—</span><span id="sparkBal"></span></div>
+    </div>
+
     <div class="row">
       <div class="field"><label for="steps">Steps</label>
         <input id="steps" type="number" min="1" max="100" value="25"></div>
@@ -294,6 +304,8 @@ const statusEl=$('status'), canvasEl=$('canvas'), metaEl=$('meta');
 const surface=$('surface'), elistEl=$('elist');
 let lastUrl=null, busy=false, selId=null, dragState=null, seq=1, jsonDirty=false;
 let localBackend=false;   // a moss backend answered /health -> no key, no 30s CDN cap
+let backendInfo=null;     // /health.backends when a local backend is present
+let sogniAccount=null;    // /api/sogni/account when a key is configured
 
 // boxes are stored NORMALIZED (0..1) so they survive any canvas change
 const st = { scene_type:'', gen_brief:'', els:[] };
@@ -311,9 +323,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     const auto = await detectLocalBackend();
     if(auto) $('endpoint').value = auto;
   }
+  $('engine').value = localStorage.getItem('moss.engine') || 'sogni';
+  await refreshEngines();   // sets epState + engine hint (calls updateHostWarnBadge)
   refresh(); layoutSurface(); render();
-
-  updateHostWarn();
 
   const saved = localStorage.getItem('moss.layout');
   if(saved){
@@ -358,6 +370,82 @@ async function detectLocalBackend(){
   }
   return '';
 }
+// ── engine selection (local weights vs Sogni Supernet) ─────────────────────
+async function refreshEngines(){
+  if(!localBackend){ $('engineField').style.display='none'; return; }
+  const base = backendBase();
+  try{
+    const h = await (await fetch(base+'/health', {cache:'no-store'})).json();
+    backendInfo = h.backends || null;
+  }catch(e){ backendInfo=null; }
+  const b = backendInfo || {};
+  const sogniOk = !!(b.sogni && b.sogni.configured);
+  const localOk = !!(b.local && b.local.ready);
+  $('engineField').style.display = (sogniOk || localOk) ? 'block' : 'none';
+  // disable options that cannot render right now
+  const opts = $('engine').options;
+  for(const o of opts){
+    if(o.value==='local') o.disabled = !localOk; else o.disabled = !sogniOk;
+  }
+  let want = $('engine').value;
+  if($('engine').selectedOptions[0]?.disabled){
+    want = sogniOk ? 'sogni' : 'local';
+    $('engine').value = want;
+  }
+  $('engineHint').textContent = sogniOk
+    ? (backendInfo.sogni.default_preset.includes('dmd8') ? '8-step DMD preset · uncensored · coded by Sogni workers' : 'full preset')
+    : (localOk ? 'local weights loaded' : 'no engine available');
+  if(sogniOk && !sogniAccount){
+    try{ sogniAccount = await (await fetch(base+'/api/sogni/account',{cache:'no-store'})).json(); }catch(e){}
+  }
+  const s = sogniAccount && sogniAccount.presets && sogniAccount.presets;
+  if(sogniAccount){
+    $('sparkBal').textContent = `${sogniAccount.spark} Spark` +
+      (s && s['8step'] && s['8step'].images_left!=null ? ` · ~${s['8step'].images_left} 8-step images` : '');
+  }
+  updateEngineLabels();
+  updateHostWarnBadge();
+}
+
+// Keep the badge honest before a job runs: MOSS-Image is the model, not the local pipeline.
+function updateHostWarnBadge(){
+  const eng = $('engine').value;
+  $('epState').textContent = !isLocalEndpoint() ? 'hosted — blocked here'
+    : (eng==='local' ? 'local GPU' : 'Sogni Supernet');
+  if(eng!=='local') $('hostWarn').style.display='none';
+}
+
+function backendBase(){
+  const v = ($('endpoint').value||'').trim();
+  if(!v) return '';
+  try{ const u = new URL(v, location.origin); return u.origin; }catch(e){ return ''; }
+}
+
+function currentEngine(){
+  const v = $('engine').value;
+  if(v==='sogni') return {backend:'sogni', preset:'moss_image_sft_dmd8_int8_convrot'};
+  if(v==='sogni_full') return {backend:'sogni', preset:'moss_image_sft_int8_convrot'};
+  return {backend:'local', preset:null};
+}
+
+function updateEngineLabels(){
+  const e = $('engine').value;
+  const s = sogniAccount && sogniAccount.presets;
+  const hint = $('engineHint');
+  if(e==='sogni' && s && s['8step'] && s['8step'].spark!=null){
+    hint.textContent = `${s['8step'].spark} Spark (~$${s['8step'].usd}) · pinned 8 steps · negative prompt ignored · ~${s['8step'].est_seconds}s`;
+  } else if(e==='sogni_full' && s && s['full'] && s['full'].spark!=null){
+    hint.textContent = `${s['full'].spark} Spark (~$${s['full'].usd}) · 50-100 steps · ~${s['full'].est_seconds}s`;
+  } else if(e==='local'){
+    hint.textContent = 'this machine · free · slower · prompt length matters';
+  }
+}
+
+function usingEngine(){
+  // true when a local backend is driving the request (local weights OR sogni via backend)
+  return localBackend && isLocalEndpoint();
+}
+
 function isLocalEndpoint(){
   const v=($('endpoint').value||'').trim();
   if(!v) return localBackend;
@@ -372,7 +460,8 @@ function updateHostWarn(){
   $('epState').style.color = (!local && !relay) ? 'var(--err)' : 'var(--muted)';
 }
 
-$('endpoint').addEventListener('input', ()=>{ localStorage.setItem('moss.endpoint', $('endpoint').value.trim()); updateHostWarn(); });
+$('endpoint').addEventListener('input', ()=>{ localStorage.setItem('moss.endpoint', $('endpoint').value.trim()); updateHostWarn(); refreshEngines(); });
+$('engine').addEventListener('change', ()=>{ localStorage.setItem('moss.engine', $('engine').value); updateEngineLabels(); updateHostWarnBadge(); refresh(); });
 
 function sizeWH(){
   const m = /^\s*(\d+)\s*[x×]\s*(\d+)\s*$/i.exec(sizeEl.value);
@@ -393,11 +482,25 @@ function refresh(){
   const steps = parseInt($('steps').value,10)||25;
   const est = 3.4 + 0.404*px*steps/1e6;
   const tEl=$('timeState');
-  // the 30s figure is the hosted CDN's cut-off; a local GPU has no such limit
+  // the 30s figure is the hosted CDN's cut-off; a local backend or Sogni has no such limit
   const local = isLocalEndpoint();
-  tEl.lastElementChild.textContent = local ? '~'+est.toFixed(0)+'s on a hosted GPU · local is slower'
-    : '~'+est.toFixed(0)+'s (cap ~30s)'+(est>27?'  ⚠ likely 524':'');
-  tEl.lastElementChild.style.color = (!local && est>27) ? 'var(--warn)' : 'var(--muted)';
+  const eng = $('engine').value;
+  const s = sogniAccount && sogniAccount.presets;
+  if(local && (eng==='sogni'||eng==='sogni_full')){
+    const key = eng==='sogni' ? '8step' : 'full';
+    const p = s && s[key];
+    tEl.lastElementChild.textContent = p && p.spark!=null
+      ? `${p.spark} Spark (~$${p.usd}) · ~${p.est_seconds}s on Sogni`
+      : 'Sogni Supernet · pricing unavailable';
+    tEl.lastElementChild.style.color = 'var(--muted)';
+  } else if(local){
+    tEl.lastElementChild.textContent = '~'+est.toFixed(0)+'s on a hosted GPU · local is slower';
+    tEl.lastElementChild.style.color = 'var(--muted)';
+  } else {
+    tEl.lastElementChild.textContent = '~'+est.toFixed(0)+'s (cap ~30s)'+(est>27?'  ⚠ likely 524':'');
+    tEl.lastElementChild.style.color = est>27 ? 'var(--warn)' : 'var(--muted)';
+  }
+  if(local){ updateEngineLabels(); }
 
   const n = $('prompt').value.length;
   $('charCount').textContent = n+' / 4000';
@@ -662,7 +765,60 @@ function buildPayload(){
   return p;
 }
 
-async function post(key, payload){
+// Sogni jobs are long and asynchronous server-side, so when the local backend is driving we
+// submit through /api/generate and poll it instead of holding one blocking request open.
+const PRESETS = { sogni:'moss_image_sft_dmd8_int8_convrot', sogni_full:'moss_image_sft_int8_convrot' };
+
+function engineFor(engine){
+  const e = {backend:'local', preset:null};
+  if(engine==='sogni' || engine==='sogni_full') return {backend:'sogni', preset:PRESETS[engine]};
+  return e;
+}
+
+async function postViaBackend(payload, engine){
+  const base = backendBase();
+  const [w,h] = (payload.size||'1024x1024').split('x').map(Number);
+  const body = {
+    prompt: payload.prompt,
+    negative_prompt: payload.negative_prompt || '',
+    width: w, height: h,
+    num_inference_steps: payload.num_inference_steps,
+    cfg_scale: payload.guidance_scale,
+    seed: payload.seed === undefined ? null : payload.seed,
+    backend: engine.backend,
+    sogni_preset: engine.preset,
+  };
+  const r = await fetch(base+'/api/generate', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  if(!r.ok) throw new Error('backend rejected: ' + (await r.text()).slice(0,300));
+  const { job_id } = await r.json();
+  return await pollJob(base, job_id);
+}
+
+async function pollJob(base, jobId){
+  for(;;){
+    await new Promise(res=>setTimeout(res, 1200));
+    const s = await (await fetch(`${base}/api/jobs/${jobId}`, {cache:'no-store'})).json();
+    if(s.status==='running' || s.status==='queued'){
+      const pct = Math.round((s.progress||0)*100);
+      log(`${s.status} · ${s.step||0}/${s.total_steps||'?'} steps (${pct}%) · ${s.elapsed_s}s` +
+          (s.engine ? ` · ${s.engine}` : ''));
+      continue;
+    }
+    if(s.status==='done') return {
+      data:[{url: base + s.image_url}],
+      model: s.engine==='sogni' ? ('sogni:'+(s.sogni_preset||'')) : 'local',
+      seed: s.seed, created: Math.floor(Date.now()/1000),
+      usage:{output_width:s.width, output_height:s.height, num_inference_steps:s.total_steps,
+              backend:s.engine, prompt_tokens:s.prompt_tokens, prompt_truncated:s.prompt_truncated}
+    };
+    throw new Error(`${s.status}${s.error ? ': '+s.error : ''}`);
+  }
+}
+
+async function post(key, payload, engine){
+  if(localBackend && isLocalEndpoint()) return await postViaBackend(payload, engine);
   const res = await fetch(endpointUrl(), {
     method:'POST',
     // a local backend has no auth; only send the header when a key exists
@@ -695,14 +851,16 @@ async function go(){
   busy=true; const btn=$('go');
   btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Generating…';
   let t0=performance.now();
-  const cap = isLocalEndpoint() ? ' · local GPU, no 30s cap' : ' (ceiling ~30s)';
+  const cap = isLocalEndpoint()
+    ? ($('engine').value.startsWith('sogni') ? ' · Sogni Supernet, no cap' : ' · local GPU, no cap')
+    : ' (ceiling ~30s)';
   const timer=setInterval(()=>{ log('waiting… '+Math.round((performance.now()-t0)/1000)+'s'+cap); },1000);
   log('POST ' + endpointUrl());
 
   try{
     for(let attempt=1;;attempt++){
       try{
-        const data = await post(key, payload);
+        const data = await post(key, payload, engineFor($('engine').value));
         const secs=((performance.now()-t0)/1000).toFixed(1);
         showImage(data.data[0].url, data, secs);
         log('Done in '+secs+'s'+(attempt>1?' (retry, '+payload.num_inference_steps+' steps)':''),'ok');

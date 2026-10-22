@@ -4,3 +4,5 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 pydantic>=2.6
 pillow>=10.0
+# Sogni Supernet engine (remote rendering; optional -- only needed for backend=sogni)
+sogni-client>=5.69

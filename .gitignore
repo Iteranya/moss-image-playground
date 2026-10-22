@@ -12,3 +12,4 @@ models/
 probe.png
 DiffSynth-Studio/
 *.egg-info/
+.secrets/

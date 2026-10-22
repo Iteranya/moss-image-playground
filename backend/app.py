@@ -100,6 +100,10 @@ class GenerateRequest(BaseModel):
     max_sequence_length: int = Field(4096, ge=64, le=4096)
     uncond_skip_layers: list[int] = [22]
     max_pixels: int = DEFAULT_MAX_PIXELS
+    # which engine renders this job: "local" (this machine) or "sogni" (Supernet, needs a key)
+    backend: str | None = None
+    # Sogni model preset; ignored when backend == "local"
+    sogni_preset: str | None = None
 
 
 class JobAccepted(BaseModel):
@@ -195,8 +199,64 @@ def _prompt_tokens(pipe, prompt: str) -> int | None:
         return None
 
 
+def _select_backend(params: GenerateRequest) -> str:
+    """Per-job engine. Explicit request wins; otherwise whatever this server is set up for.
+
+    MOSS_BACKEND=sogni makes the Supernet the default, which also means the local 27GB of
+    weights never have to be downloaded at all.
+    """
+    choice = (params.backend or os.environ.get("MOSS_BACKEND") or "local").lower()
+    if choice not in ("local", "sogni"):
+        raise HTTPException(422, f"backend must be 'local' or 'sogni', got {choice!r}")
+    return choice
+
+
+def _run_job_remote(job: dict[str, Any], params: GenerateRequest) -> None:
+    """Same contract as _run_job, but the pixels are rendered on the Sogni Supernet."""
+    import sogni_backend
+
+    job.update(status="running", started=time.time(), engine="sogni")
+    try:
+        preset = params.sogni_preset or sogni_backend.default_preset()
+        job["sogni_preset"] = preset
+        image = sogni_backend.run_job(
+            params,
+            job=job,
+            progress=lambda step, total: job.update(step=step, total_steps=total or job["total_steps"]),
+        )
+        if job.get("cancel"):
+            raise RuntimeError("cancelled by user")
+        path = OUT_DIR / f"{job['job_id']}.png"
+        image.save(path)
+        (OUT_DIR / f"{job['job_id']}.json").write_text(
+            json.dumps(
+                {
+                    **params.model_dump(),
+                    "seed": job["seed"],
+                    "width": job["width"],
+                    "height": job["height"],
+                    "engine": "sogni",
+                    "sogni_preset": preset,
+                    "sogni_project_id": job.get("sogni_project_id"),
+                    "elapsed_s": round(time.time() - job["started"], 1),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        job.update(status="done", file=str(path), progress=1.0, finished=time.time())
+    except Exception as exc:
+        cancelled = "cancelled" in str(exc).lower()
+        job.update(
+            status="cancelled" if cancelled else "error",
+            error=None if cancelled else f"{type(exc).__name__}: {exc}",
+            finished=time.time(),
+        )
+        print(f"[moss] sogni job {job['job_id']} {job['status']}: {job.get('error')}")
+
+
 def _run_job(job: dict[str, Any], params: GenerateRequest) -> None:
-    job.update(status="running", started=time.time())
+    job.update(status="running", started=time.time(), engine="local")
     try:
         tokens = _prompt_tokens(_pipe, params.prompt)
         job["prompt_chars"] = len(params.prompt)
@@ -259,7 +319,17 @@ def _run_job(job: dict[str, Any], params: GenerateRequest) -> None:
 
 async def _enqueue(job: dict[str, Any], params: GenerateRequest) -> None:
     loop = asyncio.get_running_loop()
+    engine = job.get("engine_choice") or "local"
     async with _lock():  # one generation at a time, on an 8GB card this is law
+        if engine == "sogni":
+            import sogni_backend
+
+            if not sogni_backend.enabled():
+                job.update(status="error", error="SOGNI_API_KEY is not set")
+                return
+            job["queue_position"] = 1
+            await loop.run_in_executor(_gpu_executor, _run_job_remote, job, params)
+            return
         if _pipe is None:
             job.update(status="error", error=_load_error or "model not loaded")
             return
@@ -268,6 +338,29 @@ async def _enqueue(job: dict[str, Any], params: GenerateRequest) -> None:
 
 
 # --- routes ----------------------------------------------------------------
+def _backend_report() -> dict[str, Any]:
+    """What can actually render right now. The UI uses this to show/hide the engine switch."""
+    try:
+        import sogni_backend
+
+        sogni = {
+            "configured": sogni_backend.enabled(),
+            "default_preset": sogni_backend.default_preset(),
+            "presets": {
+                "8step": sogni_backend.PRESET_8STEP,
+                "full": sogni_backend.PRESET_FULL,
+            },
+        }
+    except Exception as exc:  # SDK missing: sogni simply isn't an option
+        sogni = {"configured": False, "error": f"{type(exc).__name__}: {exc}"}
+    default = (os.environ.get("MOSS_BACKEND") or "local").lower()
+    return {
+        "default": default,
+        "local": {"ready": _pipe is not None, "error": _load_error, "mode": config.MODE},
+        "sogni": sogni,
+    }
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     gpu = None
@@ -290,6 +383,7 @@ async def health() -> dict[str, Any]:
         "error": _load_error,
         "mode": config.MODE,
         "model_id": config.MODEL_ID,
+        "backends": _backend_report(),
         "turbo": {
             "enabled": bool(getattr(config, "TURBO", False)),
             "active": _turbo(),
@@ -305,18 +399,30 @@ async def health() -> dict[str, Any]:
 
 @app.post("/api/generate", response_model=JobAccepted)
 async def generate(params: GenerateRequest) -> JobAccepted:
-    if _pipe is None and _load_error:
-        raise HTTPException(503, f"pipeline failed to load: {_load_error}")
-    if _pipe is None and not _loading:
-        raise HTTPException(503, "pipeline not loaded (started with MOSS_PRELOAD=0?)")
+    engine = _select_backend(params)
+    if engine == "local":
+        if _pipe is None and _load_error:
+            raise HTTPException(503, f"pipeline failed to load: {_load_error}")
+        if _pipe is None and not _loading:
+            raise HTTPException(503, "pipeline not loaded (started with MOSS_PRELOAD=0?)")
+    else:
+        import sogni_backend
 
-    try:
-        clamp_geometry(params.width, params.height, params.max_pixels)  # fail fast on bad geometry
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        if not sogni_backend.enabled():
+            raise HTTPException(
+                503, "SOGNI_API_KEY is not set -- export it before starting the server"
+            )
 
-    params = _resolve_sampling(params)
+    if engine == "local":
+        try:
+            clamp_geometry(params.width, params.height, params.max_pixels)  # fail fast on bad geometry
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        params = _resolve_sampling(params)
+    # sogni has its own documented bounds (512-2048, /16) applied in sogni_backend.resolve_params
+
     job = _new_job(params)
+    job["engine_choice"] = engine
     asyncio.create_task(_enqueue(job, params))
     return JobAccepted(job_id=job["job_id"], status=job["status"], queue_position=job["queue_position"])
 
@@ -359,6 +465,36 @@ async def cancel(job_id: str) -> dict[str, Any]:
     if job["status"] == "queued":
         job["status"] = "cancelled"
     return {"job_id": job_id, "status": job["status"]}
+
+
+@app.get("/api/sogni/account")
+async def sogni_account() -> dict[str, Any]:
+    """Live Spark balance + per-preset price for a 1024^2 render. Costs nothing to ask."""
+    import sogni_backend
+
+    if not sogni_backend.enabled():
+        raise HTTPException(503, "SOGNI_API_KEY is not set")
+    try:
+        bal = await sogni_backend.balance()
+    except Exception as exc:
+        raise HTTPException(502, f"{type(exc).__name__}: {exc}") from exc
+
+    spark = float(bal.get("spark", {}).get("net", 0) or 0)
+    presets: dict[str, Any] = {}
+    for name, preset in (("8step", sogni_backend.PRESET_8STEP), ("full", sogni_backend.PRESET_FULL)):
+        try:
+            est = await sogni_backend.estimate(preset, 1024, 1024, 8 if name == "8step" else 50)
+            cost = float(est.get("spark", 0) or 0)
+            presets[name] = {
+                "model_id": preset,
+                "spark": round(cost, 3),
+                "usd": round(float(est.get("usd", 0) or 0), 4),
+                "est_seconds": est.get("estimatedRenderSeconds"),
+                "images_left": int(spark // cost) if cost else None,
+            }
+        except Exception as exc:
+            presets[name] = {"model_id": preset, "error": f"{type(exc).__name__}: {exc}"}
+    return {"spark": round(spark, 2), "balance": bal, "presets": presets}
 
 
 @app.get("/api/jobs")
