@@ -44,6 +44,25 @@ python -m http.server 8765
 `file://` will **not** work: the browser sends `Origin: null` and the API rejects it with 403.
 Serve it over http instead.
 
+## Hosting caveat (important)
+
+The page itself is static and hosts anywhere, **but the MOSS API refuses non-localhost origins.**
+Measured on the CDN in front of `api.mosi.cn`:
+
+| `Origin` sent | preflight (OPTIONS) |
+|---|---|
+| `http://localhost:3000` | `204` + `access-control-allow-origin` echoed |
+| `http://127.0.0.1:8765` | `204` + `access-control-allow-origin` echoed |
+| `https://example.com` | `403`, no CORS headers |
+| `https://iteranya.github.io` | `403`, no CORS headers |
+
+A `POST` from a hosted origin does return `200` server-side, but with no `access-control-allow-*`
+headers — the browser blocks the response, and the request still consumes quota. So this copy is a
+read-only demo of the UI; generation only works when served from `localhost`.
+
+Bridging that gap needs a relay you control (e.g. a Cloudflare Worker that forwards to
+`/v1/images/generations` and adds the CORS headers), with the page's endpoint pointed at it.
+
 ## Files
 
 | file | what |

@@ -121,6 +121,12 @@
   <span class="spacer"></span>
   <a href="https://platform.mosi.cn/en/docs/reference/layout-image-generation" target="_blank" rel="noopener">API docs ↗</a>
 </header>
+<div id="hostWarn" style="display:none;margin:0;padding:8px 20px;background:#3a2d12;
+  border-bottom:1px solid #6b5320;color:#f0d08a;font-size:12.5px">
+  <b>Hosted copy:</b> the MOSS API only accepts <code>localhost</code> origins (anything else gets a bare
+  403 on preflight), so generation is blocked on this URL. Run the page locally with
+  <code>start.bat</code> or <code>python -m http.server</code> to actually generate.
+</div>
 
 <main>
   <!-- ── settings ──────────────────────────────────────────── -->
@@ -282,6 +288,10 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   $('steps').value = localStorage.getItem('moss.steps') || '25';
   $('cfg').value = localStorage.getItem('moss.cfg') || '3';
   refresh(); layoutSurface(); render();
+
+  if(!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)){
+    $('hostWarn').style.display='block';
+  }
 
   const saved = localStorage.getItem('moss.layout');
   if(saved){
