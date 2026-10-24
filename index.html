@@ -286,23 +286,43 @@
 
     <div class="card" id="bqCard" style="margin-top:12px">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <label style="margin:0">Batch queue</label>
+        <label style="margin:0">Job queue</label>
         <span class="hint" style="margin:0" id="bqCount">0 jobs</span>
+        <span class="hint" style="margin:0" id="bqTotals"></span>
         <span style="flex:1"></span>
-        <button class="sm" id="bqAdd">+ add current layout</button>
+        <button class="sm" id="bqBatchAll" title="set every job to 1 image">imgs→1</button>
       </div>
 
-      <div class="elist" id="bqList" style="max-height:190px;overflow:auto"></div>
+      <div style="display:flex;gap:6px;margin-bottom:7px">
+        <input id="bqText" type="text" spellcheck="false" style="flex:1"
+               placeholder="plain text prompt — Enter to queue">
+        <button class="sm" id="bqAddText" style="flex:none">+ text</button>
+      </div>
+
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button class="sm" id="bqAdd" style="flex:1">+ current layout</button>
+        <button class="sm" id="bqImport" style="flex:none" title="load a prompts.json">import</button>
+        <input id="bqFile" type="file" accept=".json,application/json" style="display:none">
+      </div>
+
+      <div class="elist" id="bqList" style="max-height:280px;overflow:auto"></div>
       <div class="hint" id="bqWarn" style="color:var(--warn);margin:6px 0 0;display:none"></div>
 
-      <div style="display:flex;gap:6px;margin-top:9px">
-        <div style="flex:1">
-          <label for="bqBatch">imgs / layout</label>
-          <input id="bqBatch" type="number" min="1" max="8" value="1">
+      <div id="bqEditor" style="display:none;margin-top:9px;padding:9px;border:1px solid var(--line);border-radius:6px;background:var(--panel2)">
+        <div class="hint" style="margin:0 0 7px"><span id="bqEditLabel">editing</span><span></span></div>
+        <label for="bqEditTag">tag</label>
+        <input id="bqEditTag" type="text" spellcheck="false">
+        <div id="bqEditPromptWrap" style="margin-top:6px">
+          <label for="bqEditPrompt">prompt text</label>
+          <textarea id="bqEditPrompt" rows="2" style="font-size:12px"></textarea>
         </div>
-        <div style="flex:1">
-          <label for="bqTag">tag (optional)</label>
-          <input id="bqTag" type="text" placeholder="auto" spellcheck="false">
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <div style="flex:1"><label for="bqEditBatch">imgs</label><input id="bqEditBatch" type="number" min="1" max="8" value="1"></div>
+          <div style="flex:1"><label for="bqEditSeed">seed (-1 = rand)</label><input id="bqEditSeed" type="number" value="-1"></div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button class="sm" id="bqEditSave">save</button>
+          <button class="sm" id="bqEditCancel">cancel</button>
         </div>
       </div>
 
@@ -316,7 +336,7 @@
         <label for="bqEndpoint">batch runner</label>
         <input id="bqEndpoint" type="text" spellcheck="false"
                placeholder="http://127.0.0.1:8787 — empty = export only">
-        <div class="hint"><span>stdlib relay that shells out to trigger.sh</span><span id="bqState">idle</span></div>
+        <div class="hint"><span>runs the whole queue, one job at a time</span><span id="bqState">idle</span></div>
       </div>
 
       <button class="primary" id="bqSend" style="margin-top:9px">Send to GPU →</button>
@@ -961,21 +981,29 @@ $('dl').onclick=async ()=>{
   }catch(e){ window.open(lastUrl,'_blank','noopener'); }
 };
 
-/* ── batch queue ──────────────────────────────────────────────
-   Collects layouts and emits a prompts.json for moss-batch.
-   Contract: see moss-batch/BATCH_CONTRACT.md
-   bbox is [y1,x1,y2,x2] and coordinates are centred on (0,0),
-   so |x| <= width/2 and |y| <= height/2 — validated here so a
-   layout drawn at one canvas size is never rendered at another. */
+/* ── job queue ────────────────────────────────────────────────
+   Builds a prompts.json for moss-batch from a list of jobs.
+   A job is either a Playground layout or a plain text prompt.
+   Contract: moss-batch/BATCH_CONTRACT.md
+
+   Two different "batches" exist and they are NOT the same thing:
+     - job.batch  = images denoised at once for THIS job (VRAM/RAM)
+     - the queue  = jobs run one after another (runtime only)
+   Queue depth never raises peak memory. */
 (function(){
   const BQ_KEY='moss.batch';
   let bq={jobs:[]};
+  let editing=-1;
+
   try{
     const raw=JSON.parse(localStorage.getItem(BQ_KEY)||'{}');
     if(Array.isArray(raw.jobs)) bq.jobs=raw.jobs;
   }catch(e){ bq.jobs=[]; }
+  bq.jobs=bq.jobs.filter(j=>j&&(j.layout||j.prompt));
+  bq.jobs.forEach(j=>{ if(!j.kind) j.kind=j.layout?'layout':'text'; if(!j.batch) j.batch=1; });
 
   const clampInt=(v,lo,hi,d)=>{ const n=parseInt(v,10); return Number.isFinite(n)?Math.min(hi,Math.max(lo,n)):d; };
+  const $id=id=>document.getElementById(id);
 
   function bqValidate(job){
     const out=[];
@@ -991,86 +1019,181 @@ $('dl').onclick=async ()=>{
       const b=el&&el.bbox;
       if(!Array.isArray(b)||b.length!==4){ out.push('el '+i+': bad bbox'); return; }
       const y1=b[0],x1=b[1],y2=b[2],x2=b[3];
-      if(Math.max(Math.abs(x1),Math.abs(x2))>hw+1)
-        out.push('el '+i+': x>'+hw+' (drawn at another size?)');
-      if(Math.max(Math.abs(y1),Math.abs(y2))>hh+1)
-        out.push('el '+i+': y>'+hh+' (drawn at another size?)');
+      if(Math.max(Math.abs(x1),Math.abs(x2))>hw+1) out.push('el '+i+': x>'+hw);
+      if(Math.max(Math.abs(y1),Math.abs(y2))>hh+1) out.push('el '+i+': y>'+hh);
     });
+    if(job.kind==='text' && !(job.prompt||'').trim()) out.push('empty prompt');
     return out;
-  }
-
-  function bqDoc(){
-    const [W,H]=sizeWH();
-    return {
-      steps: clampInt($('steps').value,1,100,50),
-      cfg: parseFloat($('cfg').value)||3,
-      negative: ($('negative').value||'').trim(),
-      seed: -1,
-      width: W, height: H,
-      batch: clampInt($('bqBatch').value,1,8,1),
-      prompts: bq.jobs.map(j=>({
-        tag:j.tag, layout:j.layout, width:j.width, height:j.height, batch:j.batch
-      }))
-    };
   }
 
   function bqSave(){
     try{ localStorage.setItem(BQ_KEY, JSON.stringify({jobs:bq.jobs})); }catch(e){}
   }
 
+  function bqDoc(){
+    const [W,H]=sizeWH();
+    const doc={
+      steps: clampInt($id('steps').value,1,100,50),
+      cfg: parseFloat($id('cfg').value)||3,
+      negative: ($id('negative').value||'').trim(),
+      seed: -1,
+      width: W, height: H,
+      batch: 1,
+      prompts: bq.jobs.map(j=>{
+        const o={tag:j.tag, width:j.width, height:j.height, batch:j.batch};
+        const s=Number(j.seed);
+        if(Number.isFinite(s) && s>=0) o.seed=s;
+        if(j.kind==='layout') o.layout=j.layout; else o.prompt=j.prompt;
+        return o;
+      })
+    };
+    return doc;
+  }
+
+  function estMinutes(){
+    const [W,H]=sizeWH();
+    const px=Math.max(1,W*H);
+    const per=8*(px/(1024*1024));           // ~8s/img at 1024^2 on a 4090-class card
+    const imgs=bq.jobs.reduce((a,j)=>a+(Number(j.batch)||1),0);
+    return (imgs*per)/60;
+  }
+
+  function mkBtn(label,title,fn,danger){
+    const b=document.createElement('button');
+    b.className='sm'; b.type='button';
+    b.textContent=label; if(title) b.title=title;
+    b.style.cssText='flex:none;padding:2px 6px;font-size:11px;line-height:1.1'+(danger?';color:var(--err)':'');
+    b.onclick=fn;
+    return b;
+  }
+
   function bqRender(){
-    const list=$('bqList');
+    const list=$id('bqList');
     if(!list) return;
     list.innerHTML='';
+
     bq.jobs.forEach((j,i)=>{
       const problems=bqValidate(j);
       const row=document.createElement('div');
-      row.style.cssText='display:flex;align-items:center;gap:8px;padding:6px 8px;'+
-        'border:1px solid var(--line);border-radius:6px;margin-bottom:6px;background:var(--panel2)';
+      row.style.cssText='display:flex;align-items:center;gap:6px;padding:5px 7px;'+
+        'border:1px solid var(--line);border-radius:6px;margin-bottom:5px;background:var(--panel2)';
+
+      const idx=document.createElement('span');
+      idx.textContent=String(i+1).padStart(2,'0');
+      idx.style.cssText='font:10px var(--mono);color:var(--muted);flex:none;width:16px';
+
+      const kind=document.createElement('span');
+      kind.textContent=j.kind==='layout'?'LAY':'TXT';
+      kind.style.cssText='font:9px var(--mono);letter-spacing:.06em;flex:none;padding:1px 4px;border-radius:3px;'+
+        'border:1px solid '+(j.kind==='layout'?'var(--accent2)':'var(--accent)')+';'+
+        'color:'+(j.kind==='layout'?'var(--accent2)':'var(--accent)');
+
       const info=document.createElement('div');
       info.style.cssText='flex:1;min-width:0';
       const name=document.createElement('div');
-      name.style.cssText='font:12px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
-      name.textContent=j.tag;
+      name.style.cssText='font:11.5px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+      name.textContent=j.tag||('job-'+(i+1));
       const sub=document.createElement('div');
-      sub.style.cssText='font-size:11px;margin-top:2px;color:'+(problems.length?'var(--warn)':'var(--muted)');
-      const nEl=(j.layout&&j.layout.elements)?j.layout.elements.length:0;
-      sub.textContent=nEl+' boxes · '+j.width+'×'+j.height+
-        (j.batch>1?(' · '+j.batch+' imgs'):'')+
+      sub.style.cssText='font-size:10px;color:'+(problems.length?'var(--warn)':'var(--muted)')+';'+
+        'white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+      const nEl=j.kind==='layout'?((j.layout.elements||[]).length+' boxes'):((j.prompt||'').length+' chars');
+      sub.textContent=nEl+' · '+j.width+'×'+j.height+' · '+j.batch+' img'+
         (problems.length?(' · '+problems[0]):'');
       info.appendChild(name); info.appendChild(sub);
-      const rm=document.createElement('button');
-      rm.className='sm'; rm.textContent='✕'; rm.title='remove from queue';
-      rm.onclick=()=>{ bq.jobs.splice(i,1); bqRender(); };
-      row.appendChild(info); row.appendChild(rm);
+
+      const up=mkBtn('↑','move up',()=>{ if(i>0){ const t=bq.jobs[i-1]; bq.jobs[i-1]=bq.jobs[i]; bq.jobs[i]=t; bqRender(); } });
+      const dn=mkBtn('↓','move down',()=>{ if(i<bq.jobs.length-1){ const t=bq.jobs[i+1]; bq.jobs[i+1]=bq.jobs[i]; bq.jobs[i]=t; bqRender(); } });
+      const ed=mkBtn('✎','edit',()=>bqEdit(i));
+      const rm=mkBtn('✕','remove',()=>{ bq.jobs.splice(i,1); if(editing===i) bqEditorClose(); bqRender(); },true);
+
+      row.appendChild(idx); row.appendChild(kind); row.appendChild(info);
+      row.appendChild(up); row.appendChild(dn); row.appendChild(ed); row.appendChild(rm);
       list.appendChild(row);
     });
 
-    $('bqCount').textContent=bq.jobs.length+(bq.jobs.length===1?' job':' jobs');
-    const all=bq.jobs.reduce((a,j)=>a.concat(bqValidate(j)),[]);
-    const warn=$('bqWarn');
-    if(all.length){
-      warn.style.display='';
-      warn.textContent=all.length+' sizing warning(s) — fix before spending GPU time';
-    }else{
-      warn.style.display='none'; warn.textContent='';
+    if(!bq.jobs.length){
+      const empty=document.createElement('div');
+      empty.className='hint';
+      empty.style.cssText='margin:0;padding:8px 2px';
+      empty.textContent='queue empty — add a text prompt or the current layout';
+      list.appendChild(empty);
     }
+
+    const imgs=bq.jobs.reduce((a,j)=>a+(Number(j.batch)||1),0);
+    $id('bqCount').textContent=bq.jobs.length+(bq.jobs.length===1?' job':' jobs');
+    $id('bqTotals').textContent=bq.jobs.length?(imgs+' imgs · ~'+estMinutes().toFixed(1)+' min'):'';
+
+    const all=bq.jobs.reduce((a,j)=>a.concat(bqValidate(j)),[]);
+    const warn=$id('bqWarn');
+    if(all.length){ warn.style.display=''; warn.textContent=all.length+' warning(s) — fix before spending GPU time'; }
+    else{ warn.style.display='none'; warn.textContent=''; }
+
     bqSave();
   }
 
-  function bqAdd(){
+  function bqEditorClose(){
+    editing=-1;
+    const box=$id('bqEditor'); if(box) box.style.display='none';
+  }
+
+  function bqEdit(i){
+    const j=bq.jobs[i]; if(!j) return;
+    editing=i;
+    $id('bqEditLabel').textContent='editing job '+(i+1)+(j.kind==='layout'?' (layout)':' (text)');
+    $id('bqEditTag').value=j.tag||'';
+    $id('bqEditPrompt').value=j.prompt||'';
+    $id('bqEditPromptWrap').style.display=j.kind==='text'?'':'none';
+    $id('bqEditBatch').value=j.batch||1;
+    $id('bqEditSeed').value=(Number.isFinite(Number(j.seed))?Number(j.seed):-1);
+    $id('bqEditor').style.display='';
+  }
+
+  function bqEditSave(){
+    if(editing<0) return;
+    const j=bq.jobs[editing]; if(!j) return bqEditorClose();
+    const tag=($id('bqEditTag').value||'').trim();
+    if(tag) j.tag=tag.replace(/[^a-z0-9_-]/gi,'-').replace(/-+/g,'-').toLowerCase();
+    if(j.kind==='text') j.prompt=$id('bqEditPrompt').value;
+    j.batch=clampInt($id('bqEditBatch').value,1,8,1);
+    const s=Number($id('bqEditSeed').value);
+    j.seed=Number.isFinite(s)?s:-1;
+    bqEditorClose();
+    bqRender();
+    $id('bqStatus').textContent='saved job '+(editing+1);
+  }
+
+  function normTag(raw,fallback){
+    const t=(raw||fallback||'job').trim()
+      .replace(/[^a-z0-9_-]/gi,'-').replace(/-+/g,'-').replace(/^-|-$/g,'').toLowerCase();
+    return t||'job';
+  }
+
+  function bqNextTag(){
+    let n=bq.jobs.length+1;
+    const used=new Set(bq.jobs.map(j=>j.tag));
+    while(used.has('job-'+n)) n++;
+    return 'job-'+n;
+  }
+
+  function bqAddLayout(){
     const layout=toLayout();
     const [W,H]=sizeWH();
-    const raw=($('bqTag').value||'').trim();
-    const tag=(raw||('job-'+(bq.jobs.length+1)))
-      .replace(/[^a-z0-9_-]/gi,'-').replace(/-+/g,'-').toLowerCase();
-    bq.jobs.push({
-      tag, layout, width:W, height:H,
-      batch:clampInt($('bqBatch').value,1,8,1)
-    });
-    $('bqTag').value='';
+    const tag=normTag('', bqNextTag());
+    bq.jobs.push({kind:'layout', tag, layout, width:W, height:H, batch:1, seed:-1});
     bqRender();
-    $('bqStatus').textContent='added '+tag+' ('+((layout.elements||[]).length)+' boxes)';
+    $id('bqStatus').textContent='queued layout '+tag+' ('+((layout.elements||[]).length)+' boxes)';
+  }
+
+  function bqAddText(){
+    const box=$id('bqText');
+    const text=(box.value||'').trim();
+    if(!text){ $id('bqStatus').textContent='type a prompt first'; return; }
+    const [W,H]=sizeWH();
+    const tag=normTag('', bqNextTag());
+    bq.jobs.push({kind:'text', tag, prompt:text, width:W, height:H, batch:1, seed:-1});
+    box.value='';
+    bqRender();
+    $id('bqStatus').textContent='queued text '+tag;
   }
 
   function bqDownload(text,filename){
@@ -1082,22 +1205,54 @@ $('dl').onclick=async ()=>{
   }
 
   function bqExport(){
-    if(!bq.jobs.length){ $('bqStatus').textContent='queue is empty'; return; }
-    const text=JSON.stringify(bqDoc(),null,2);
-    bqDownload(text,'prompts.json');
-    $('bqStatus').textContent='exported prompts.json ('+bq.jobs.length+' jobs)';
+    if(!bq.jobs.length){ $id('bqStatus').textContent='queue is empty'; return; }
+    bqDownload(JSON.stringify(bqDoc(),null,2),'prompts.json');
+    $id('bqStatus').textContent='exported prompts.json ('+bq.jobs.length+' jobs)';
   }
 
   async function bqCopy(){
-    if(!bq.jobs.length){ $('bqStatus').textContent='queue is empty'; return; }
+    if(!bq.jobs.length){ $id('bqStatus').textContent='queue is empty'; return; }
     const text=JSON.stringify(bqDoc(),null,2);
-    try{
-      await navigator.clipboard.writeText(text);
-      $('bqStatus').textContent='copied '+bq.jobs.length+' jobs to clipboard';
-    }catch(e){
-      bqDownload(text,'prompts.json');
-      $('bqStatus').textContent='clipboard blocked — downloaded instead';
-    }
+    try{ await navigator.clipboard.writeText(text); $id('bqStatus').textContent='copied '+bq.jobs.length+' jobs'; }
+    catch(e){ bqDownload(text,'prompts.json'); $id('bqStatus').textContent='clipboard blocked — downloaded instead'; }
+  }
+
+  function bqImportFile(file){
+    const rd=new FileReader();
+    rd.onload=()=>{
+      try{
+        const doc=JSON.parse(String(rd.result));
+        const list=Array.isArray(doc)?doc:(doc.prompts||doc.jobs||[]);
+        if(!Array.isArray(list)) throw new Error('no prompts[] or jobs[] array');
+        const [W,H]=sizeWH();
+        let added=0;
+        list.forEach((p,ix)=>{
+          if(typeof p==='string'){
+            if(!p.trim()) return;
+            bq.jobs.push({kind:'text', tag:normTag('',bqNextTag()), prompt:p,
+                          width:W, height:H, batch:1, seed:-1});
+            added++; return;
+          }
+          if(!p||typeof p!=='object') return;
+          const base={tag:normTag(p.tag, bqNextTag()),
+                      width:Number(p.width)||W, height:Number(p.height)||H,
+                      batch:clampInt(p.batch,1,8,1),
+                      seed:Number.isFinite(Number(p.seed))?Number(p.seed):-1};
+          if(p.layout && typeof p.layout==='object'){
+            bq.jobs.push(Object.assign({kind:'layout', layout:p.layout}, base));
+            added++;
+          }else if(typeof p.prompt==='string'){
+            bq.jobs.push(Object.assign({kind:'text', prompt:p.prompt}, base));
+            added++;
+          }
+        });
+        bqRender();
+        $id('bqStatus').textContent='imported '+added+' job(s)';
+      }catch(e){
+        $id('bqStatus').textContent='import failed: '+e.message;
+      }
+    };
+    rd.readAsText(file);
   }
 
   async function bqPoll(ep,id){
@@ -1106,60 +1261,69 @@ $('dl').onclick=async ()=>{
       try{
         const r=await fetch(ep+'/api/batch/'+encodeURIComponent(id));
         const j=await r.json();
-        $('bqState').textContent=j.state||'?';
-        $('bqStatus').textContent=(j.state||'?')+(j.detail?(' · '+j.detail):'');
+        $id('bqState').textContent=j.state||'?';
+        $id('bqStatus').textContent=(j.state||'?')+(j.detail?(' · '+j.detail):'');
         if(j.state==='done'||j.state==='failed'){
-          $('bqSend').disabled=false;
-          if(j.dir) $('bqStatus').textContent+=' → '+j.dir;
+          $id('bqSend').disabled=false;
+          if(j.dir) $id('bqStatus').textContent+=' → '+j.dir;
           return;
         }
-      }catch(e){ /* keep polling */ }
+      }catch(e){}
     }
-    $('bqSend').disabled=false;
-    $('bqStatus').textContent='stopped polling — still running server-side';
+    $id('bqSend').disabled=false;
+    $id('bqStatus').textContent='stopped polling — still running server-side';
   }
 
   async function bqSend(){
-    if(!bq.jobs.length){ $('bqStatus').textContent='queue is empty'; return; }
-    const ep=($('bqEndpoint').value||'').trim().replace(/\/+$/,'');
-    if(!ep){
-      bqExport();
-      $('bqStatus').textContent='no runner set — exported prompts.json instead';
-      return;
-    }
-    $('bqSend').disabled=true;
-    $('bqState').textContent='sending…';
+    if(!bq.jobs.length){ $id('bqStatus').textContent='queue is empty'; return; }
+    const bad=bq.jobs.reduce((a,j)=>a.concat(bqValidate(j)),[]);
+    if(bad.length){ $id('bqStatus').textContent='fix '+bad.length+' warning(s) first'; return; }
+    const ep=($id('bqEndpoint').value||'').trim().replace(/\/+$/,'');
+    if(!ep){ bqExport(); $id('bqStatus').textContent='no runner set — exported prompts.json instead'; return; }
+    $id('bqSend').disabled=true;
+    $id('bqState').textContent='sending…';
     try{
-      const r=await fetch(ep+'/api/batch',{
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify(bqDoc())
-      });
+      const r=await fetch(ep+'/api/batch',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(bqDoc())});
       const j=await r.json().catch(()=>({}));
-      if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
-      $('bqState').textContent=j.job_id||'queued';
-      $('bqStatus').textContent='queued '+(j.job_id||'')+' — polling…';
+      if(!r.ok) throw new Error(j.error||('HTTP '+r.status)+(j.problems?': '+j.problems[0]:''));
+      $id('bqState').textContent=j.job_id||'queued';
+      $id('bqStatus').textContent='queued '+bq.jobs.length+' job(s) as '+(j.job_id||'')+' — polling…';
       bqPoll(ep,j.job_id);
     }catch(e){
-      $('bqState').textContent='error';
-      $('bqStatus').textContent='runner unreachable: '+e.message+' (file export still works)';
-      $('bqSend').disabled=false;
+      $id('bqState').textContent='error';
+      $id('bqStatus').textContent='runner unreachable: '+e.message+' (file export still works)';
+      $id('bqSend').disabled=false;
     }
   }
 
   document.addEventListener('DOMContentLoaded',()=>{
-    if(!$('bqList')) return;
-    $('bqAdd').onclick=bqAdd;
-    $('bqClear').onclick=()=>{ bq.jobs=[]; bqRender(); $('bqStatus').textContent='queue cleared'; };
-    $('bqExport').onclick=bqExport;
-    $('bqCopy').onclick=bqCopy;
-    $('bqSend').onclick=bqSend;
-    $('bqEndpoint').value=localStorage.getItem('moss.batchEndpoint')||'';
-    $('bqEndpoint').addEventListener('input',e=>{
+    if(!$id('bqList')) return;
+    $id('bqAdd').onclick=bqAddLayout;
+    $id('bqAddText').onclick=bqAddText;
+    $id('bqText').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); bqAddText(); } });
+    $id('bqBatchAll').onclick=()=>{ bq.jobs.forEach(j=>j.batch=1); bqRender();
+      $id('bqStatus').textContent='set every job to 1 image'; };
+    $id('bqImport').onclick=()=>$id('bqFile').click();
+    $id('bqFile').addEventListener('change',e=>{
+      const f=e.target.files&&e.target.files[0]; if(f) bqImportFile(f);
+      e.target.value='';
+    });
+    $id('bqEditSave').onclick=bqEditSave;
+    $id('bqEditCancel').onclick=bqEditorClose;
+    $id('bqExport').onclick=bqExport;
+    $id('bqCopy').onclick=bqCopy;
+    $id('bqClear').onclick=()=>{ if(!bq.jobs.length) return;
+      bq.jobs=[]; bqEditorClose(); bqRender(); $id('bqStatus').textContent='queue cleared'; };
+    $id('bqSend').onclick=bqSend;
+    $id('bqEndpoint').value=localStorage.getItem('moss.batchEndpoint')||'';
+    $id('bqEndpoint').addEventListener('input',e=>{
       try{ localStorage.setItem('moss.batchEndpoint',e.target.value); }catch(err){}
     });
     bqRender();
   });
 })();
+
 </script>
 </body>
 </html>

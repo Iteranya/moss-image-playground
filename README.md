@@ -109,23 +109,42 @@ Then put TLS in front (Caddy: `play.example.com { reverse_proxy 127.0.0.1:9000 }
 
 Details and the standalone-relay variant: [`relay/README.md`](relay/README.md).
 
-## Batch queue (render on a rented GPU)
+## Job queue (render on a rented GPU)
 
-The **Batch queue** card collects layouts and emits a `prompts.json` for
-[`moss-batch`](https://github.com/Iteranya/moss-batch), which renders them on a
+The **Job queue** card builds a `prompts.json` for
+[`moss-batch`](https://github.com/Iteranya/moss-batch), which renders it on a
 SaladCloud GPU and shuts itself down when the batch ends.
 
-- **+ add current layout** snapshots `toLayout()` plus the canvas size it was
-  drawn at. The queue persists in `localStorage` (`moss.batch`).
-- Each row validates its own bboxes: coordinates are centred on (0,0), so a box
-  needs `|x| ≤ width/2` and `|y| ≤ height/2`. Rendering a 1776×1168 layout at
-  1024×1024 crops characters out of frame — the warning catches it before you
-  pay for it.
-- **Export prompts.json** downloads the doc, **Copy JSON** puts it on the
-  clipboard, **Clear** empties the queue.
+Prepare a few dozen jobs, then send the whole list at once.
+
+- **+ text** queues a plain prompt (Enter also submits). **+ current layout**
+  snapshots `toLayout()` plus the canvas size it was drawn at.
+- Each row: `↑ ↓` reorder, `✎` edit tag / prompt / images / seed, `✕` remove.
+- **imgs→1** sets every job to a single image — the sane default for layout jobs,
+  where you want one composition per seed rather than four variants.
+- **import** loads an existing `prompts.json` back into the queue.
+- **Export prompts.json**, **Copy JSON**, **Clear**.
 - Set **batch runner** to `http://127.0.0.1:8787` and run
-  `python batch_server.py` from the `moss-batch` checkout to POST jobs straight
-  to the GPU. Leave it empty and the button just exports the file.
+  `python batch_server.py` from the `moss-batch` checkout to POST the queue
+  straight to the GPU. Empty = export only.
+
+### Two different "batches" — don't confuse them
+
+| | what it is | what it costs |
+|---|---|---|
+| **imgs / job** | images denoised **simultaneously** in one job | **VRAM + host RAM** |
+| **queue length** | jobs run **one after another** | runtime only |
+
+Queuing 30 jobs does *not* raise peak memory — they run sequentially. Only
+`imgs / job` and resolution do.
+
+### Validation
+
+Each row checks its own bboxes: coordinates are centred on (0,0), so a box needs
+`|x| ≤ width/2` and `|y| ≤ height/2`, plus a size that is a multiple of 16 and
+between 0.25M–4M pixels. Rendering a 1776×1168 layout at 1024×1024 crops
+characters out of frame — the warning catches it before you pay for it. **Send to
+GPU refuses to run while warnings exist.**
 
 `bbox` stays `[y1, x1, y2, x2]` — y first, exactly as `toLayout()` writes it. The
 full schema is in
