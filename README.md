@@ -109,6 +109,28 @@ Then put TLS in front (Caddy: `play.example.com { reverse_proxy 127.0.0.1:9000 }
 
 Details and the standalone-relay variant: [`relay/README.md`](relay/README.md).
 
+## Batch queue (render on a rented GPU)
+
+The **Batch queue** card collects layouts and emits a `prompts.json` for
+[`moss-batch`](https://github.com/Iteranya/moss-batch), which renders them on a
+SaladCloud GPU and shuts itself down when the batch ends.
+
+- **+ add current layout** snapshots `toLayout()` plus the canvas size it was
+  drawn at. The queue persists in `localStorage` (`moss.batch`).
+- Each row validates its own bboxes: coordinates are centred on (0,0), so a box
+  needs `|x| ≤ width/2` and `|y| ≤ height/2`. Rendering a 1776×1168 layout at
+  1024×1024 crops characters out of frame — the warning catches it before you
+  pay for it.
+- **Export prompts.json** downloads the doc, **Copy JSON** puts it on the
+  clipboard, **Clear** empties the queue.
+- Set **batch runner** to `http://127.0.0.1:8787` and run
+  `python batch_server.py` from the `moss-batch` checkout to POST jobs straight
+  to the GPU. Leave it empty and the button just exports the file.
+
+`bbox` stays `[y1, x1, y2, x2]` — y first, exactly as `toLayout()` writes it. The
+full schema is in
+[`moss-batch/BATCH_CONTRACT.md`](https://github.com/Iteranya/moss-batch/blob/main/BATCH_CONTRACT.md).
+
 ## Files
 
 | file | what |

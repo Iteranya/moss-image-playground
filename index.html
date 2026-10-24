@@ -284,6 +284,45 @@
       <div class="hist" id="hist"></div>
     </div>
 
+    <div class="card" id="bqCard" style="margin-top:12px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <label style="margin:0">Batch queue</label>
+        <span class="hint" style="margin:0" id="bqCount">0 jobs</span>
+        <span style="flex:1"></span>
+        <button class="sm" id="bqAdd">+ add current layout</button>
+      </div>
+
+      <div class="elist" id="bqList" style="max-height:190px;overflow:auto"></div>
+      <div class="hint" id="bqWarn" style="color:var(--warn);margin:6px 0 0;display:none"></div>
+
+      <div style="display:flex;gap:6px;margin-top:9px">
+        <div style="flex:1">
+          <label for="bqBatch">imgs / layout</label>
+          <input id="bqBatch" type="number" min="1" max="8" value="1">
+        </div>
+        <div style="flex:1">
+          <label for="bqTag">tag (optional)</label>
+          <input id="bqTag" type="text" placeholder="auto" spellcheck="false">
+        </div>
+      </div>
+
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px">
+        <button class="sm" id="bqExport">Export prompts.json</button>
+        <button class="sm" id="bqCopy">Copy JSON</button>
+        <button class="sm" id="bqClear" style="color:var(--err)">Clear</button>
+      </div>
+
+      <div class="field" style="margin-top:9px">
+        <label for="bqEndpoint">batch runner</label>
+        <input id="bqEndpoint" type="text" spellcheck="false"
+               placeholder="http://127.0.0.1:8787 — empty = export only">
+        <div class="hint"><span>stdlib relay that shells out to trigger.sh</span><span id="bqState">idle</span></div>
+      </div>
+
+      <button class="primary" id="bqSend" style="margin-top:9px">Send to GPU →</button>
+      <div id="bqStatus" class="hint" style="margin:6px 0 0"></div>
+    </div>
+
     <details>
       <summary>Request payload</summary>
       <pre id="req">—</pre>
@@ -921,6 +960,206 @@ $('dl').onclick=async ()=>{
     a.download='moss-'+Date.now()+'.png'; a.click(); URL.revokeObjectURL(a.href);
   }catch(e){ window.open(lastUrl,'_blank','noopener'); }
 };
+
+/* ── batch queue ──────────────────────────────────────────────
+   Collects layouts and emits a prompts.json for moss-batch.
+   Contract: see moss-batch/BATCH_CONTRACT.md
+   bbox is [y1,x1,y2,x2] and coordinates are centred on (0,0),
+   so |x| <= width/2 and |y| <= height/2 — validated here so a
+   layout drawn at one canvas size is never rendered at another. */
+(function(){
+  const BQ_KEY='moss.batch';
+  let bq={jobs:[]};
+  try{
+    const raw=JSON.parse(localStorage.getItem(BQ_KEY)||'{}');
+    if(Array.isArray(raw.jobs)) bq.jobs=raw.jobs;
+  }catch(e){ bq.jobs=[]; }
+
+  const clampInt=(v,lo,hi,d)=>{ const n=parseInt(v,10); return Number.isFinite(n)?Math.min(hi,Math.max(lo,n)):d; };
+
+  function bqValidate(job){
+    const out=[];
+    const L=job.layout||{};
+    const els=Array.isArray(L.elements)?L.elements:[];
+    if(job.width%16||job.height%16) out.push('size not a multiple of 16');
+    const px=job.width*job.height;
+    if(px<250000||px>4000000) out.push((px/1e6).toFixed(2)+'Mpx outside 0.25M-4M');
+    if(els.length && L.bbox_coord_space && L.bbox_coord_space!=='abs_centralized')
+      out.push('bbox_coord_space='+L.bbox_coord_space);
+    const hw=job.width/2, hh=job.height/2;
+    els.forEach((el,i)=>{
+      const b=el&&el.bbox;
+      if(!Array.isArray(b)||b.length!==4){ out.push('el '+i+': bad bbox'); return; }
+      const y1=b[0],x1=b[1],y2=b[2],x2=b[3];
+      if(Math.max(Math.abs(x1),Math.abs(x2))>hw+1)
+        out.push('el '+i+': x>'+hw+' (drawn at another size?)');
+      if(Math.max(Math.abs(y1),Math.abs(y2))>hh+1)
+        out.push('el '+i+': y>'+hh+' (drawn at another size?)');
+    });
+    return out;
+  }
+
+  function bqDoc(){
+    const [W,H]=sizeWH();
+    return {
+      steps: clampInt($('steps').value,1,100,50),
+      cfg: parseFloat($('cfg').value)||3,
+      negative: ($('negative').value||'').trim(),
+      seed: -1,
+      width: W, height: H,
+      batch: clampInt($('bqBatch').value,1,8,1),
+      prompts: bq.jobs.map(j=>({
+        tag:j.tag, layout:j.layout, width:j.width, height:j.height, batch:j.batch
+      }))
+    };
+  }
+
+  function bqSave(){
+    try{ localStorage.setItem(BQ_KEY, JSON.stringify({jobs:bq.jobs})); }catch(e){}
+  }
+
+  function bqRender(){
+    const list=$('bqList');
+    if(!list) return;
+    list.innerHTML='';
+    bq.jobs.forEach((j,i)=>{
+      const problems=bqValidate(j);
+      const row=document.createElement('div');
+      row.style.cssText='display:flex;align-items:center;gap:8px;padding:6px 8px;'+
+        'border:1px solid var(--line);border-radius:6px;margin-bottom:6px;background:var(--panel2)';
+      const info=document.createElement('div');
+      info.style.cssText='flex:1;min-width:0';
+      const name=document.createElement('div');
+      name.style.cssText='font:12px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+      name.textContent=j.tag;
+      const sub=document.createElement('div');
+      sub.style.cssText='font-size:11px;margin-top:2px;color:'+(problems.length?'var(--warn)':'var(--muted)');
+      const nEl=(j.layout&&j.layout.elements)?j.layout.elements.length:0;
+      sub.textContent=nEl+' boxes · '+j.width+'×'+j.height+
+        (j.batch>1?(' · '+j.batch+' imgs'):'')+
+        (problems.length?(' · '+problems[0]):'');
+      info.appendChild(name); info.appendChild(sub);
+      const rm=document.createElement('button');
+      rm.className='sm'; rm.textContent='✕'; rm.title='remove from queue';
+      rm.onclick=()=>{ bq.jobs.splice(i,1); bqRender(); };
+      row.appendChild(info); row.appendChild(rm);
+      list.appendChild(row);
+    });
+
+    $('bqCount').textContent=bq.jobs.length+(bq.jobs.length===1?' job':' jobs');
+    const all=bq.jobs.reduce((a,j)=>a.concat(bqValidate(j)),[]);
+    const warn=$('bqWarn');
+    if(all.length){
+      warn.style.display='';
+      warn.textContent=all.length+' sizing warning(s) — fix before spending GPU time';
+    }else{
+      warn.style.display='none'; warn.textContent='';
+    }
+    bqSave();
+  }
+
+  function bqAdd(){
+    const layout=toLayout();
+    const [W,H]=sizeWH();
+    const raw=($('bqTag').value||'').trim();
+    const tag=(raw||('job-'+(bq.jobs.length+1)))
+      .replace(/[^a-z0-9_-]/gi,'-').replace(/-+/g,'-').toLowerCase();
+    bq.jobs.push({
+      tag, layout, width:W, height:H,
+      batch:clampInt($('bqBatch').value,1,8,1)
+    });
+    $('bqTag').value='';
+    bqRender();
+    $('bqStatus').textContent='added '+tag+' ('+((layout.elements||[]).length)+' boxes)';
+  }
+
+  function bqDownload(text,filename){
+    const blob=new Blob([text],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=filename; a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function bqExport(){
+    if(!bq.jobs.length){ $('bqStatus').textContent='queue is empty'; return; }
+    const text=JSON.stringify(bqDoc(),null,2);
+    bqDownload(text,'prompts.json');
+    $('bqStatus').textContent='exported prompts.json ('+bq.jobs.length+' jobs)';
+  }
+
+  async function bqCopy(){
+    if(!bq.jobs.length){ $('bqStatus').textContent='queue is empty'; return; }
+    const text=JSON.stringify(bqDoc(),null,2);
+    try{
+      await navigator.clipboard.writeText(text);
+      $('bqStatus').textContent='copied '+bq.jobs.length+' jobs to clipboard';
+    }catch(e){
+      bqDownload(text,'prompts.json');
+      $('bqStatus').textContent='clipboard blocked — downloaded instead';
+    }
+  }
+
+  async function bqPoll(ep,id){
+    for(let i=0;i<360;i++){
+      await new Promise(r=>setTimeout(r,5000));
+      try{
+        const r=await fetch(ep+'/api/batch/'+encodeURIComponent(id));
+        const j=await r.json();
+        $('bqState').textContent=j.state||'?';
+        $('bqStatus').textContent=(j.state||'?')+(j.detail?(' · '+j.detail):'');
+        if(j.state==='done'||j.state==='failed'){
+          $('bqSend').disabled=false;
+          if(j.dir) $('bqStatus').textContent+=' → '+j.dir;
+          return;
+        }
+      }catch(e){ /* keep polling */ }
+    }
+    $('bqSend').disabled=false;
+    $('bqStatus').textContent='stopped polling — still running server-side';
+  }
+
+  async function bqSend(){
+    if(!bq.jobs.length){ $('bqStatus').textContent='queue is empty'; return; }
+    const ep=($('bqEndpoint').value||'').trim().replace(/\/+$/,'');
+    if(!ep){
+      bqExport();
+      $('bqStatus').textContent='no runner set — exported prompts.json instead';
+      return;
+    }
+    $('bqSend').disabled=true;
+    $('bqState').textContent='sending…';
+    try{
+      const r=await fetch(ep+'/api/batch',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(bqDoc())
+      });
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+      $('bqState').textContent=j.job_id||'queued';
+      $('bqStatus').textContent='queued '+(j.job_id||'')+' — polling…';
+      bqPoll(ep,j.job_id);
+    }catch(e){
+      $('bqState').textContent='error';
+      $('bqStatus').textContent='runner unreachable: '+e.message+' (file export still works)';
+      $('bqSend').disabled=false;
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded',()=>{
+    if(!$('bqList')) return;
+    $('bqAdd').onclick=bqAdd;
+    $('bqClear').onclick=()=>{ bq.jobs=[]; bqRender(); $('bqStatus').textContent='queue cleared'; };
+    $('bqExport').onclick=bqExport;
+    $('bqCopy').onclick=bqCopy;
+    $('bqSend').onclick=bqSend;
+    $('bqEndpoint').value=localStorage.getItem('moss.batchEndpoint')||'';
+    $('bqEndpoint').addEventListener('input',e=>{
+      try{ localStorage.setItem('moss.batchEndpoint',e.target.value); }catch(err){}
+    });
+    bqRender();
+  });
+})();
 </script>
 </body>
 </html>
